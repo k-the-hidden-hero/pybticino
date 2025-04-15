@@ -1,0 +1,5 @@
+# These owners will be the default owners for everything in
+# the repo. Unless a later match takes precedence,
+# @k-the-hidden-hero will be requested for
+# review when someone opens a pull request.
+*       @k-the-hidden-hero # Updated

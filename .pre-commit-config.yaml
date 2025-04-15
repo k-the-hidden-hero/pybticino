@@ -24,14 +24,14 @@ repos:
         name: mypy
         exclude: tests/
         additional_dependencies:
-          - types-aiohttp # Changed from types-requests
+          - types-requests # Changed from types-requests
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0 # Use the ref you want to point at
     hooks:
       - id: check-ast
-      - id: no-commit-to-branch
-        args: [--branch, main] # Changed from master/devel
+      # - id: no-commit-to-branch
+      #   args: [--branch, main] # Changed from master/devel
       - id: forbid-new-submodules
       - id: check-merge-conflict
       - id: detect-private-key

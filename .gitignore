@@ -145,3 +145,4 @@ websocket_ring.log
 pyatmo/
 workflows
 call_incoming.xml
+uv.lock

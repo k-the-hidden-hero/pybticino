@@ -1,7 +1,7 @@
 """Data models for pybticino."""
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 # Placeholder models - To be refined based on API responses
 
@@ -15,7 +15,7 @@ class Module:
     type: str
     bridge: Optional[str] = None
     # Add other common attributes observed in homesdata/homestatus
-    raw_data: Dict[str, Any] = None  # Store the raw dictionary
+    raw_data: dict[str, Any] = field(default_factory=dict)  # Store the raw dictionary
 
 
 @dataclass
@@ -24,9 +24,9 @@ class Home:
 
     id: str
     name: str
-    modules: List[Module]
+    modules: list[Module]
     # Add other attributes from homesdata/homestatus if needed
-    raw_data: Dict[str, Any] = None  # Store the raw dictionary
+    raw_data: dict[str, Any] = field(default_factory=dict)  # Store the raw dictionary
 
 
 @dataclass
@@ -37,4 +37,4 @@ class Event:
     type: str
     time: int
     # Add other event attributes
-    raw_data: Dict[str, Any] = None  # Store the raw dictionary
+    raw_data: dict[str, Any] = field(default_factory=dict)  # Store the raw dictionary

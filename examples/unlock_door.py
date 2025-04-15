@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Example script to unlock a specific door lock (BNDL module) using the async pybticino library.
+"""Example script to unlock a specific door lock (BNDL module) using the async pybticino library.
 
 Reads credentials (BTICINOUSER, BTICINOPASSWORD) and the target home ID
 (BTICINOHOMEID) from environment variables.
@@ -15,27 +14,20 @@ Usage:
   python3 unlock_door.py <door_lock_module_id>
 """
 
+import argparse
 import asyncio
 import logging
-import json
 import os
-import argparse
 import sys
 from typing import Optional  # Import Optional
 
 # Import new async classes
-from pybticino import (
-    AuthHandler,
-    AsyncAccount,
-    ApiError,
-    AuthError,
-    Home,
-    Module,
-)
+from pybticino import ApiError, AsyncAccount, AuthError, AuthHandler, Module
 
 # --- Configuration ---
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
 # Read credentials and home ID from environment variables
@@ -45,26 +37,35 @@ HOME_ID = os.getenv("BTICINOHOMEID")
 
 if not all([USERNAME, PASSWORD, HOME_ID]):
     logging.error(
-        "Please set BTICINOUSER, BTICINOPASSWORD, and BTICINOHOMEID environment variables."
+        "Please set BTICINOUSER, BTICINOPASSWORD, and BTICINOHOMEID environment variables.",
     )
     sys.exit(1)
 
 # --- Argument Parsing ---
 parser = argparse.ArgumentParser(description="Unlock a BTicino/Netatmo door lock.")
 parser.add_argument(
-    "module_id", help="The ID of the BNDL module (door lock) to unlock."
+    "module_id",
+    help="The ID of the BNDL module (door lock) to unlock.",
 )
 args = parser.parse_args()
 MODULE_ID_TO_UNLOCK = args.module_id
 
 
 # --- Main Async Function ---
-async def main():
+async def main() -> None:
     """Run the async unlock script."""
     logging.info(
-        f"Attempting to unlock module ID: {MODULE_ID_TO_UNLOCK} in home ID: {HOME_ID}"
+        "Attempting to unlock module ID: %s in home ID: %s",
+        MODULE_ID_TO_UNLOCK,
+        HOME_ID,
     )
     auth = None  # Initialize for finally block
+    # Ensure credentials and HOME_ID are not None before proceeding
+    if not USERNAME or not PASSWORD or not HOME_ID:
+        logging.error(
+            "USERNAME, PASSWORD, or HOME_ID is None. Check environment variables.",
+        )
+        sys.exit(1)
     try:
         # 1. Create AuthHandler and AsyncAccount
         logging.info("Creating AuthHandler and AsyncAccount...")
@@ -74,7 +75,8 @@ async def main():
 
         # 2. Get Home Data to find timezone and bridge ID
         logging.info(
-            f"Fetching topology for home {HOME_ID} to get timezone and bridge ID..."
+            "Fetching topology for home %s to get timezone and bridge ID...",
+            HOME_ID,
         )
         # This call implicitly authenticates if needed
         await account.async_update_topology()
@@ -83,7 +85,8 @@ async def main():
 
         if not home_obj:
             logging.error(
-                f"Could not find home with ID {HOME_ID} after topology update."
+                "Could not find home with ID %s after topology update.",
+                HOME_ID,
             )
             sys.exit(1)
 
@@ -98,32 +101,39 @@ async def main():
                 module_details = module
 
         if not module_details:
-            logging.error(f"Module {MODULE_ID_TO_UNLOCK} not found in home {HOME_ID}.")
+            logging.error(
+                "Module %s not found in home %s.",
+                MODULE_ID_TO_UNLOCK,
+                HOME_ID,
+            )
             sys.exit(1)
 
         if module_details.type != "BNDL":
             logging.error(
-                f"Module {MODULE_ID_TO_UNLOCK} is not a Door Lock (BNDL), it is type '{module_details.type}'. Aborting."
+                "Module %s is not a Door Lock (BNDL), it is type '%s'. Aborting.",
+                MODULE_ID_TO_UNLOCK,
+                module_details.type,
             )
             sys.exit(1)
 
         if not home_timezone:
             logging.warning(
-                "Could not determine timezone for the home. Proceeding without it, but this might fail."
+                "Could not determine timezone for the home. Proceeding without it, but this might fail.",
             )
         if not bridge_id:
             logging.error(
-                "Could not determine bridge ID (BNC1) for the home. Cannot send command to bridged module."
+                "Could not determine bridge ID (BNC1) for the home. Cannot send command to bridged module.",
             )
             sys.exit(1)
 
-        logging.info(f"Found target module: Name='{module_details.name}', Type='BNDL'")
-        logging.info(f"Using Bridge ID: {bridge_id}")
-        logging.info(f"Using Timezone: {home_timezone}")
+        logging.info("Found target module: Name='%s', Type='BNDL'", module_details.name)
+        logging.info("Using Bridge ID: %s", bridge_id)
+        logging.info("Using Timezone: %s", home_timezone)
 
         # 3. Call async_set_module_state to unlock
         logging.info(
-            f"Sending unlock command (lock=False) to module {MODULE_ID_TO_UNLOCK}..."
+            "Sending unlock command (lock=False) to module %s...",
+            MODULE_ID_TO_UNLOCK,
         )
         result = await account.async_set_module_state(
             home_id=HOME_ID,
@@ -132,17 +142,22 @@ async def main():
             timezone=home_timezone,
             bridge_id=bridge_id,
         )
-        logging.info(f"Set state command sent. Result: {result}")
+        logging.info("Set state command sent. Result: %s", result)
         logging.info(
-            f"Door lock {MODULE_ID_TO_UNLOCK} should be unlocked (it might re-lock automatically)."
+            "Door lock %s should be unlocked (it might re-lock automatically).",
+            MODULE_ID_TO_UNLOCK,
         )
 
-    except AuthError as e:
-        logging.error(f"Authentication Error: {e}")
+    except AuthError:
+        logging.exception("Authentication Error")
     except ApiError as e:
-        logging.error(f"API Error: Status={e.status_code}, Message={e.error_message}")
-    except Exception as e:
-        logging.exception(f"An unexpected error occurred: {e}")
+        logging.exception(
+            "API Error: Status=%s, Message=%s",
+            e.status_code,
+            e.error_message,
+        )
+    except Exception:
+        logging.exception("An unexpected error occurred")
     finally:
         # Ensure the session is closed
         if auth:

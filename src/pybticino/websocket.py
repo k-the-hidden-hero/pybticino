@@ -1,15 +1,18 @@
 """WebSocket client for receiving push notifications."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 import json
 import logging
-import websockets
 import ssl
-from typing import Callable, Awaitable, Any
+from typing import Any
+
+import websockets
 from websockets.protocol import State  # Added for state checking
 
 from .auth import AuthHandler
-from .const import PUSH_WS_URL, DEFAULT_APP_VERSION, DEFAULT_PLATFORM
+from .const import DEFAULT_APP_VERSION, DEFAULT_PLATFORM, PUSH_WS_URL
 from .exceptions import AuthError, PyBticinoException
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,9 +27,8 @@ class WebsocketClient:
         message_callback: Callable[[dict[str, Any]], Awaitable[None]],
         app_version: str = DEFAULT_APP_VERSION,
         platform: str = DEFAULT_PLATFORM,
-    ):
-        """
-        Initialize the WebSocket client.
+    ) -> None:
+        """Initialize the WebSocket client.
 
         Args:
             auth_handler: Authenticated AuthHandler instance.
@@ -34,11 +36,14 @@ class WebsocketClient:
                               It will be called with the decoded JSON message.
             app_version: The application version string.
             platform: The platform string (e.g., 'Android').
+
         """
         if not isinstance(auth_handler, AuthHandler):
-            raise TypeError("auth_handler must be an instance of AuthHandler")
+            err_msg = "auth_handler must be an instance of AuthHandler"
+            raise TypeError(err_msg)
         if not asyncio.iscoroutinefunction(message_callback):
-            raise TypeError("message_callback must be an async function")
+            err_msg = "message_callback must be an async function"
+            raise TypeError(err_msg)
 
         self._auth_handler = auth_handler
         self._message_callback = message_callback
@@ -51,10 +56,11 @@ class WebsocketClient:
             asyncio.Lock()
         )  # Lock to prevent concurrent connect/disconnect
 
-    async def _subscribe(self):
+    async def _subscribe(self) -> None:
         """Send the subscription message to the WebSocket server."""
         if not self._websocket:
-            raise PyBticinoException("WebSocket connection not established.")
+            err_msg = "WebSocket connection not established."
+            raise PyBticinoException(err_msg)
 
         try:
             # Ensure token is valid before subscribing (using async getter)
@@ -79,23 +85,24 @@ class WebsocketClient:
                 _LOGGER.info("WebSocket subscription successful.")
             else:
                 # Handle potential errors like expired token etc. if server sends specific codes
-                raise PyBticinoException(f"WebSocket subscription failed: {response}")
-        except AuthError as e:
-            _LOGGER.error("Authentication error during WebSocket subscription: %s", e)
+                err_msg = f"WebSocket subscription failed: {response}"
+                raise PyBticinoException(err_msg)  # noqa: TRY301
+        except AuthError:
+            _LOGGER.exception("Authentication error during WebSocket subscription")
             raise  # Re-raise AuthError to be handled by connect/run_forever
         except websockets.exceptions.ConnectionClosed:
             _LOGGER.warning("WebSocket connection closed during subscription.")
             raise  # Re-raise to trigger reconnection logic
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout waiting for WebSocket subscription response.")
-            raise PyBticinoException(
-                "Timeout waiting for WebSocket subscription response."
-            )
-        except Exception as e:
-            _LOGGER.error("Error during WebSocket subscription: %s", e)
-            raise PyBticinoException(f"Error during WebSocket subscription: {e}") from e
+        except TimeoutError:
+            _LOGGER.exception("Timeout waiting for WebSocket subscription response.")
+            err_msg = "Timeout waiting for WebSocket subscription response."
+            raise PyBticinoException(err_msg) from None
+        except Exception as e:  # Added 'as e' back
+            _LOGGER.exception("Error during WebSocket subscription")
+            err_msg = f"Error during WebSocket subscription: {e}"
+            raise PyBticinoException(err_msg) from e
 
-    async def _listen(self):
+    async def _listen(self) -> None:
         """Listen for messages on the WebSocket."""
         # Ensure connection exists and is not closed before starting to listen
         if (
@@ -119,11 +126,12 @@ class WebsocketClient:
                     await self._message_callback(message)
                 except json.JSONDecodeError:
                     _LOGGER.warning(
-                        "Received non-JSON WebSocket message: %s", message_raw
+                        "Received non-JSON WebSocket message: %s",
+                        message_raw,
                     )
-                except Exception as e:  # Catches errors in the callback
+                except Exception:  # Catches errors in the callback
                     _LOGGER.exception(
-                        "Error processing WebSocket message in callback: %s", e
+                        "Error processing WebSocket message in callback",
                     )
             # End of the async for loop
 
@@ -131,30 +139,34 @@ class WebsocketClient:
         # These except/else/finally blocks belong to the try block wrapping the async for loop.
         except websockets.exceptions.ConnectionClosedOK as e:
             _LOGGER.info(
-                f"WebSocket connection closed normally (code={e.code}, reason='{e.reason or 'No reason given'}')."
+                "WebSocket connection closed normally (code=%s, reason='%s').",
+                e.code,
+                e.reason or "No reason given",
             )
             # Don't re-raise, this is a clean closure
         except websockets.exceptions.ConnectionClosedError as e:
             _LOGGER.warning(
-                f"WebSocket connection closed with error (code={e.code}, reason='{e.reason or 'No reason given'}')."
+                "WebSocket connection closed with error (code=%s, reason='%s').",
+                e.code,
+                e.reason or "No reason given",
             )
             raise  # Re-raise ConnectionClosedError to trigger reconnection in run_forever
         except asyncio.CancelledError:
             _LOGGER.info("WebSocket listener task cancelled.")
             raise  # Propagate cancellation
-        except Exception as e:
+        except Exception:
             # Catch any other unexpected error during the listener loop or its finalization
-            _LOGGER.exception("Unexpected error caught in listener loop: %s", e)
+            _LOGGER.exception("Unexpected error caught in listener loop")
             raise  # Re-raise other exceptions to trigger reconnection
         else:
             _LOGGER.info(
-                "_listen: Async for loop finished without exceptions."
+                "_listen: Async for loop finished without exceptions.",
             )  # Log normal loop exit
         finally:
             _LOGGER.info("WebSocket listener loop finished.")
             # Do not set self._is_running = False here
 
-    async def connect(self):
+    async def connect(self) -> None:
         """Establish WebSocket connection and start listening."""
         async with self._connection_lock:
             if self._is_running:
@@ -177,7 +189,8 @@ class WebsocketClient:
                 )
                 _LOGGER.info("WebSocket connection established.")
                 _LOGGER.debug(
-                    f"WebSocket state: {self._websocket.state}"
+                    "WebSocket state: %s",
+                    self._websocket.state,
                 )  # Log state after connect
 
                 # Subscribe after connecting
@@ -188,24 +201,24 @@ class WebsocketClient:
                 _LOGGER.info("WebSocket listener task started.")
 
             except Exception as e:
-                _LOGGER.error("Failed to connect or subscribe to WebSocket: %s", e)
+                _LOGGER.exception(
+                    "Failed to connect or subscribe to WebSocket",
+                )  # Use exception
                 self._is_running = False  # Reset running state on failure
                 if (
                     self._websocket
                     and self._websocket.state != State.CLOSED  # Use state check
                 ):  # Check if not closed before trying to close
-                    try:
+                    # Use contextlib.suppress for cleaner error ignoring
+                    with suppress(websockets.exceptions.WebSocketException):
                         await self._websocket.close()
-                    except websockets.exceptions.WebSocketException:
-                        pass  # Ignore errors during cleanup close
                 self._websocket = None
                 self._listener_task = None  # Ensure task is cleared
                 # Re-raise as a specific exception for run_forever to catch
-                raise PyBticinoException(
-                    f"WebSocket connection/subscription failed: {e}"
-                ) from e
+                err_msg = f"WebSocket connection/subscription failed: {e}"
+                raise PyBticinoException(err_msg) from e
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         """Disconnect the WebSocket client."""
         async with self._connection_lock:
             if not self._is_running and not self._websocket:
@@ -221,9 +234,9 @@ class WebsocketClient:
                     await self._listener_task
                 except asyncio.CancelledError:
                     _LOGGER.debug("Listener task successfully cancelled.")
-                except Exception as e:
+                except Exception:
                     _LOGGER.exception(
-                        "Error waiting for listener task cancellation: %s", e
+                        "Error waiting for listener task cancellation",
                     )
             self._listener_task = None
 
@@ -235,17 +248,18 @@ class WebsocketClient:
                 try:
                     await ws.close()
                     _LOGGER.info("WebSocket connection closed.")
-                    _LOGGER.debug(f"WebSocket state after close: {ws.state}")
+                    _LOGGER.debug("WebSocket state after close: %s", ws.state)
                 except websockets.exceptions.WebSocketException as e:
                     _LOGGER.warning("Error closing WebSocket connection: %s", e)
             elif ws:
                 _LOGGER.debug(
-                    f"WebSocket connection was already closed (state: {ws.state})."
+                    "WebSocket connection was already closed (state: %s).",
+                    ws.state,
                 )
             else:
                 _LOGGER.debug("No active WebSocket connection object to close.")
 
-    async def run_forever(self, reconnect_delay: int = 30):
+    async def run_forever(self, reconnect_delay: int = 30) -> None:
         """Connect and keep running, attempting to reconnect on failure."""
         _LOGGER.info("Starting WebSocket client run_forever loop...")
         while True:
@@ -266,26 +280,26 @@ class WebsocketClient:
                             )  # Get exception if any
                             if listener_exception:
                                 _LOGGER.error(
-                                    f"run_forever: Listener task finished with exception: {listener_exception!r}"
+                                    "run_forever: Listener task finished with exception: %r",
+                                    listener_exception,
                                 )
                                 # Exception occurred, will trigger reconnect below
                     except asyncio.CancelledError:
                         _LOGGER.info(
-                            "run_forever: Listener task was cancelled during shutdown."
+                            "run_forever: Listener task was cancelled during shutdown.",
                         )
                         # If cancellation was triggered by disconnect(), _is_running will be False
                         if not self._is_running:
                             break  # Exit loop cleanly
-                        else:
-                            # If cancelled externally but not via disconnect(), still attempt reconnect?
-                            _LOGGER.warning(
-                                "Listener task cancelled externally, attempting reconnect."
-                            )
-                    except Exception as e:
-                        # Catch any error during the await self._listener_task itself (less likely)
-                        _LOGGER.error(
-                            f"run_forever: Error awaiting listener task: {e!r}"
+                        # If cancelled externally but not via disconnect(), still attempt reconnect?
+                        _LOGGER.warning(
+                            "Listener task cancelled externally, attempting reconnect.",
                         )
+                    except (
+                        Exception
+                    ) as e:  # Catch blind exception is okay here for loop robustness
+                        # Catch any error during the await self._listener_task itself (less likely)
+                        _LOGGER.exception("run_forever: Error awaiting listener task")
                         listener_exception = (
                             e  # Treat this also as a reason to reconnect
                         )
@@ -295,33 +309,31 @@ class WebsocketClient:
                 if self._is_running:
                     if listener_exception:
                         _LOGGER.warning(
-                            "Listener task stopped due to error. Attempting reconnect."
+                            "Listener task stopped due to error. Attempting reconnect.",
                         )
                     elif self._listener_task and self._listener_task.done():
                         # Listener finished without CancelledError or logged exception from await
                         _LOGGER.warning(
-                            "Listener task stopped unexpectedly (e.g. server closed connection or loop finished cleanly). Attempting reconnect."
+                            "Listener task stopped unexpectedly (e.g. server closed connection or loop finished cleanly). Attempting reconnect.",
                         )
                     # else: The task might still be running if connect() failed before starting it
                 else:
                     # _is_running is False, means disconnect() was called or shutdown initiated
                     _LOGGER.info(
-                        "run_forever: Shutdown initiated or disconnect called. Exiting loop."
+                        "run_forever: Shutdown initiated or disconnect called. Exiting loop.",
                     )
                     break
 
-            except PyBticinoException as e:
+            except PyBticinoException:
                 # Errors during connect() or _subscribe()
-                _LOGGER.error(
-                    "WebSocket connection/subscription error: %s. Retrying in %d seconds...",
-                    e,
+                _LOGGER.exception(
+                    "WebSocket connection/subscription error. Retrying in %d seconds...",
                     reconnect_delay,
                 )
-            except Exception as e:
+            except Exception:
                 # Catch-all for other unexpected errors in the main loop
                 _LOGGER.exception(
-                    "Unexpected error in run_forever loop: %s. Retrying in %d seconds...",
-                    e,
+                    "Unexpected error in run_forever loop. Retrying in %d seconds...",
                     reconnect_delay,
                 )
 
@@ -329,6 +341,7 @@ class WebsocketClient:
             _LOGGER.info("Attempting WebSocket reconnection...")
             await self.disconnect()  # Ensure clean state before retry
             _LOGGER.info(
-                "Waiting %d seconds before reconnect attempt...", reconnect_delay
+                "Waiting %d seconds before reconnect attempt...",
+                reconnect_delay,
             )
             await asyncio.sleep(reconnect_delay)

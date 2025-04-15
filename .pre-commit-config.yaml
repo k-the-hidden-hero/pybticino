@@ -10,6 +10,7 @@ repos:
       - id: ruff
         args:
           - --fix
+          - --ignore=S105,ASYNC109,SLF001
 
   - repo: https://github.com/psf/black
     rev: 24.8.0

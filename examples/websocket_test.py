@@ -1,43 +1,36 @@
 #!/usr/bin/env python3
 
-"""
-Example script to test the pybticino WebSocket client for push notifications (async version).
+"""Example script to test the pybticino WebSocket client for push notifications (async version).
 
 Reads credentials (BTICINOUSER, BTICINOPASSWORD) from environment variables.
 Connects to the push notification WebSocket and prints received messages.
 Press Ctrl+C to stop.
 """
 
+import argparse
 import asyncio
-import json
+import functools
 import logging
 import os
 import signal  # To handle graceful shutdown
-import sys
-import argparse
 import time
-import functools
-from typing import Optional, Callable, Awaitable, Any, Dict  # Added Dict
+from typing import Any, Optional
 
 # Import new async classes
 from pybticino import (
-    AuthHandler,
-    AsyncAccount,  # Use AsyncAccount
-    WebsocketClient,
     ApiError,
+    AsyncAccount,  # Use AsyncAccount
     AuthError,
+    AuthHandler,
     PyBticinoException,
+    WebsocketClient,
 )
 
 # --- Configuration ---
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - [%(name)s] %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - [%(name)s] %(message)s",
 )
-# Enable more detailed logging for debugging:
-# logging.getLogger("pybticino.websocket").setLevel(logging.DEBUG)
-# logging.getLogger("pybticino.auth").setLevel(logging.DEBUG)
-# logging.getLogger("pybticino.account").setLevel(logging.DEBUG)
-# logging.getLogger("websockets").setLevel(logging.DEBUG)
 
 
 # --- Fake Data for Simulation ---
@@ -97,12 +90,12 @@ FAKE_GET_EVENTS_RESPONSE_WITH_CALL = {
                                 "expires_at": current_time + 3600,
                             },
                             "message": f"Incoming call from Fake Module {FAKE_MODULE_ID}",
-                        }
+                        },
                     ],
                     "video_status": "available",
                 },
             ],
-        }
+        },
     },
     "status": "ok",
 }
@@ -127,7 +120,7 @@ FAKE_GET_EVENTS_RESPONSE_WITHOUT_CALL = {
                     "message": "Fake disconnection event",
                 },
             ],
-        }
+        },
     },
     "status": "ok",
 }
@@ -145,25 +138,25 @@ shutdown_event = asyncio.Event()
 
 # Modified to be async and accept AsyncAccount
 async def handle_message(
-    message: Dict[str, Any],
+    message: dict[str, Any],
     account: Optional[AsyncAccount],  # Accept AsyncAccount or None (for simulation)
     home_id: str,
     simulate: bool,
-    fake_event_data: Optional[Dict[str, Any]] = None,
-):
-    """Callback function to process received WebSocket messages."""
+    fake_event_data: Optional[dict[str, Any]] = None,
+) -> None:
+    """Process received WebSocket messages."""
     logging.info("Received Message: %s", message)
     push_type = message.get("push_type")
 
     if push_type:
-        logging.info(f"--> Push Type: {push_type}")
+        logging.info("--> Push Type: %s", push_type)
         extra_params = message.get("extra_params", {})
-        logging.info(f"--> Extra Params: {extra_params}")
+        logging.info("--> Extra Params: %s", extra_params)
 
         # Check for the specific trigger message
         if push_type == "BNC1-websocket_connection":
             logging.info(
-                "Trigger 'BNC1-websocket_connection' received. Checking for recent call events..."
+                "Trigger 'BNC1-websocket_connection' received. Checking for recent call events...",
             )
             events_data = None
             try:
@@ -180,13 +173,13 @@ async def handle_message(
                     )
                 else:
                     logging.error(
-                        "Cannot fetch events: Account object is None and not in simulation mode."
+                        "Cannot fetch events: Account object is None and not in simulation mode.",
                     )
                     return
 
                 # Process the events_data (either real or fake)
                 if events_data and events_data.get("body", {}).get("home", {}).get(
-                    "events"
+                    "events",
                 ):
                     logging.debug("Recent events fetched: %s", events_data)
                     call_found = False
@@ -206,27 +199,27 @@ async def handle_message(
                                 break
                     if not call_found:
                         logging.info(
-                            "No 'incoming_call' event found in the last 5 events."
+                            "No 'incoming_call' event found in the last 5 events.",
                         )
                 else:
                     logging.warning(
-                        "Could not retrieve recent events or events list is empty."
+                        "Could not retrieve recent events or events list is empty.",
                     )
 
-            except (ApiError, PyBticinoException) as e:
-                logging.error(f"Error fetching events after trigger: {e}")
-            except Exception as e:
+            except (ApiError, PyBticinoException):
+                logging.exception("Error fetching events after trigger")
+            except Exception:
                 logging.exception("Unexpected error fetching events after trigger.")
 
 
-def signal_handler():
+def signal_handler() -> None:
     """Handle Ctrl+C or termination signals."""
     logging.info("Shutdown signal received, stopping...")
     shutdown_event.set()
 
 
-async def run_simulation():
-    """Runs the simulation loop."""
+async def run_simulation() -> None:
+    """Run the simulation loop."""
     logging.info("Starting simulation loop (Press Ctrl+C to stop)...")
     fake_response_toggle = True
     while not shutdown_event.is_set():
@@ -254,15 +247,15 @@ async def run_simulation():
 
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=10.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         except asyncio.CancelledError:
             logging.info("[SIMULATION] Loop cancelled.")
             break
 
 
-async def run_real_connection():
-    """Runs the real WebSocket client connection."""
+async def run_real_connection() -> None:
+    """Run the real WebSocket client connection."""
     logging.info("Starting real WebSocket connection (Press Ctrl+C to stop)...")
     auth = None
     account = None
@@ -271,8 +264,13 @@ async def run_real_connection():
 
     if not all([USERNAME, PASSWORD]):
         logging.error(
-            "Real mode requires BTICINOUSER and BTICINOPASSWORD environment variables."
+            "Real mode requires BTICINOUSER and BTICINOPASSWORD environment variables.",
         )
+        return
+
+    # Ensure credentials are not None before proceeding
+    if not USERNAME or not PASSWORD:
+        logging.error("USERNAME or PASSWORD is None. Check environment variables.")
         return
 
     try:
@@ -285,8 +283,8 @@ async def run_real_connection():
         logging.info("Fetching topology to determine Home ID...")
         try:
             await account.async_update_topology()
-        except (ApiError, PyBticinoException, AuthError) as e:
-            logging.error(f"Error fetching homes data: {e}")
+        except (ApiError, PyBticinoException, AuthError):
+            logging.exception("Error fetching homes data")
             return  # Exit if topology fails
 
         if not account.homes:
@@ -294,27 +292,31 @@ async def run_real_connection():
             return  # Exit if no homes
 
         if HOME_ID_ENV:
-            logging.info(f"Attempting to use specified Home ID: {HOME_ID_ENV}")
+            logging.info("Attempting to use specified Home ID: %s", HOME_ID_ENV)
             if HOME_ID_ENV in account.homes:
                 home_id_to_use = HOME_ID_ENV
                 logging.info(
-                    f"Using specified Home: Name='{account.homes[home_id_to_use].name}', ID='{home_id_to_use}'"
+                    "Using specified Home: Name='%s', ID='%s'",
+                    account.homes[home_id_to_use].name,
+                    home_id_to_use,
                 )
             else:
-                logging.error(f"Specified Home ID {HOME_ID_ENV} not found in account.")
-                logging.error(f"Valid Home IDs found: {list(account.homes.keys())}")
+                logging.error("Specified Home ID %s not found in account.", HOME_ID_ENV)
+                logging.error("Valid Home IDs found: %s", list(account.homes.keys()))
                 return  # Exit if specified ID is invalid
         else:
             # Get the first home ID from the dictionary keys if none specified
             first_home_id = next(iter(account.homes))
             home_id_to_use = first_home_id
             logging.info(
-                f"No specific Home ID specified. Using first found Home: Name='{account.homes[first_home_id].name}', ID='{home_id_to_use}'"
+                "No specific Home ID specified. Using first found Home: Name='%s', ID='%s'",
+                account.homes[first_home_id].name,
+                home_id_to_use,
             )
 
         if not home_id_to_use:
             logging.error(
-                "Could not determine Home ID to use. Set BTICINOHOMEID or ensure account has homes."
+                "Could not determine Home ID to use. Set BTICINOHOMEID or ensure account has homes.",
             )
             return
 
@@ -330,12 +332,14 @@ async def run_real_connection():
         logging.info("Initializing WebSocket client...")
         # Pass the async AuthHandler instance
         ws_client = WebsocketClient(
-            auth_handler=auth, message_callback=callback_with_context
+            auth_handler=auth,
+            message_callback=callback_with_context,
         )
 
         # 5. Run the client until shutdown signal
         logging.info(
-            f"Running WebSocket client for Home ID {home_id_to_use}, waiting for messages..."
+            "Running WebSocket client for Home ID %s, waiting for messages...",
+            home_id_to_use,
         )
         run_task = asyncio.create_task(ws_client.run_forever())
 
@@ -345,12 +349,12 @@ async def run_real_connection():
         await ws_client.disconnect()
         await run_task  # Wait for run_forever task to finish
 
-    except (AuthError, ApiError, PyBticinoException) as e:
-        logging.error(f"Client Error: {e}")
+    except (AuthError, ApiError, PyBticinoException):
+        logging.exception("Client Error")
     except asyncio.CancelledError:
         logging.info("Real connection task cancelled.")
-    except Exception as e:
-        logging.exception(f"An unexpected error occurred during real connection: {e}")
+    except Exception:
+        logging.exception("An unexpected error occurred during real connection")
     finally:
         logging.info("Cleaning up...")
         # Ensure the session is closed
@@ -360,8 +364,8 @@ async def run_real_connection():
         logging.info("Real WebSocket connection finished.")
 
 
-async def main_entry(args):  # Renamed to avoid conflict with module name
-    """Main entry point, decides between simulation and real connection."""
+async def main_entry(args: argparse.Namespace) -> None:
+    """Decide between simulation and real connection."""
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
@@ -374,7 +378,7 @@ async def main_entry(args):  # Renamed to avoid conflict with module name
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Run pybticino WebSocket example, optionally in simulation mode."
+        description="Run pybticino WebSocket example, optionally in simulation mode.",
     )
     parser.add_argument(
         "--simulate",

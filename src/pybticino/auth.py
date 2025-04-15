@@ -1,20 +1,20 @@
 """Async Authentication handler for pybticino."""
 
-import aiohttp
-import asyncio
 import logging
 import time
 from typing import Optional
 
+import aiohttp
+
 from .const import (
     BASE_URL,
+    DEFAULT_APP_VERSION,
+    DEFAULT_SCOPE,
     TOKEN_ENDPOINT,
     get_client_id,
     get_client_secret,
-    DEFAULT_SCOPE,
-    DEFAULT_APP_VERSION,
 )
-from .exceptions import AuthError, ApiError
+from .exceptions import ApiError, AuthError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class AuthHandler:
         scope: str = DEFAULT_SCOPE,
         app_version: str = DEFAULT_APP_VERSION,
         session: Optional[aiohttp.ClientSession] = None,
-    ):
+    ) -> None:
         """Initialize the authentication handler."""
         self._username = username
         self._password = password
@@ -54,7 +54,7 @@ class AuthHandler:
             self._managed_session = True  # We created it, so we manage it
         return self._session
 
-    async def close_session(self):
+    async def close_session(self) -> None:
         """Close the aiohttp session if it's managed by this instance."""
         if self._session and not self._session.closed and self._managed_session:
             await self._session.close()
@@ -78,12 +78,12 @@ class AuthHandler:
                     await self._refresh_access_token()
                 except AuthError:
                     _LOGGER.warning(
-                        "Token refresh failed, attempting full authentication."
+                        "Token refresh failed, attempting full authentication.",
                     )
                     await self.authenticate()  # Fallback to full auth
             else:
                 _LOGGER.debug(
-                    "No refresh token available, performing full authentication."
+                    "No refresh token available, performing full authentication.",
                 )
                 await self.authenticate()
         elif not self._access_token:
@@ -92,11 +92,12 @@ class AuthHandler:
 
         if not self._access_token:
             # Should not happen if authenticate/refresh worked, but safety check
-            raise AuthError("Failed to obtain a valid access token.")
+            err_msg = "Failed to obtain a valid access token."
+            raise AuthError(err_msg)
 
         return self._access_token
 
-    async def authenticate(self):
+    async def authenticate(self) -> None:
         """Perform authentication to get access and refresh tokens."""
         url = BASE_URL + TOKEN_ENDPOINT
         payload = {
@@ -114,7 +115,10 @@ class AuthHandler:
         try:
             _LOGGER.debug("Requesting token from %s", url)
             async with session.post(
-                url, data=payload, headers=headers, timeout=10
+                url,
+                data=payload,
+                headers=headers,
+                timeout=10,
             ) as response:
                 if response.status >= 400:
                     error_text = await response.text()
@@ -129,18 +133,20 @@ class AuthHandler:
                             response.status == 400
                             and error_data.get("error") == "invalid_grant"
                         ):
-                            raise AuthError(
+                            err_msg = (
                                 "Authentication failed: Invalid credentials or grant"
                             )
+                            raise AuthError(err_msg)
                         # Raise generic ApiError for other 4xx/5xx based on JSON if possible
                         raise ApiError(
-                            response.status, error_data.get("error", error_text)
+                            response.status,
+                            error_data.get("error", error_text),
                         )
                     except (
                         aiohttp.ContentTypeError,
                         ValueError,
-                    ):  # Handle non-JSON errors
-                        raise ApiError(response.status, error_text)
+                    ) as parse_err:  # Handle non-JSON errors
+                        raise ApiError(response.status, error_text) from parse_err
 
                 token_data = await response.json()
                 _LOGGER.debug("Token response received: %s", token_data)
@@ -149,7 +155,8 @@ class AuthHandler:
                     "access_token" not in token_data
                     or "refresh_token" not in token_data
                 ):
-                    raise AuthError("Authentication failed: Missing tokens in response")
+                    err_msg = "Authentication failed: Missing tokens in response"
+                    raise AuthError(err_msg)  # noqa: TRY301
 
                 self._access_token = token_data["access_token"]
                 self._refresh_token = token_data["refresh_token"]
@@ -163,21 +170,23 @@ class AuthHandler:
                 _LOGGER.info("Authentication successful. Access token obtained.")
 
         except aiohttp.ClientError as req_err:
-            _LOGGER.error("Request error during authentication: %s", req_err)
-            raise AuthError(
-                f"Authentication failed: Request error - {req_err}"
-            ) from req_err
-        except asyncio.TimeoutError as timeout_err:
-            _LOGGER.error("Timeout during authentication request")
-            raise AuthError("Authentication failed: Request timed out") from timeout_err
+            _LOGGER.exception("Request error during authentication")
+            err_msg = f"Authentication failed: Request error - {req_err}"
+            raise AuthError(err_msg) from req_err
+        except TimeoutError as timeout_err:
+            _LOGGER.exception("Timeout during authentication request")
+            err_msg = "Authentication failed: Request timed out"
+            raise AuthError(err_msg) from timeout_err
         except Exception as e:
-            _LOGGER.exception("Unexpected error during authentication: %s", e)
-            raise AuthError(f"Authentication failed: Unexpected error - {e}") from e
+            _LOGGER.exception("Unexpected error during authentication")
+            err_msg = f"Authentication failed: Unexpected error - {e}"
+            raise AuthError(err_msg) from e
 
-    async def _refresh_access_token(self):
+    async def _refresh_access_token(self) -> None:
         """Refresh the access token using the refresh token."""
         if not self._refresh_token:
-            raise AuthError("Cannot refresh token: No refresh token available.")
+            err_msg = "Cannot refresh token: No refresh token available."
+            raise AuthError(err_msg)
 
         url = BASE_URL + TOKEN_ENDPOINT
         payload = {
@@ -192,7 +201,10 @@ class AuthHandler:
         try:
             _LOGGER.info("Refreshing access token...")
             async with session.post(
-                url, data=payload, headers=headers, timeout=10
+                url,
+                data=payload,
+                headers=headers,
+                timeout=10,
             ) as response:
                 if response.status >= 400:
                     error_text = await response.text()
@@ -211,16 +223,16 @@ class AuthHandler:
                             "invalid_grant",
                             "invalid_request",
                         ]:
-                            raise AuthError(
-                                f"Token refresh failed: {error_data.get('error')}"
-                            )
+                            err_msg = f"Token refresh failed: {error_data.get('error')}"
+                            raise AuthError(err_msg)
                         raise ApiError(
-                            response.status, error_data.get("error", error_text)
+                            response.status,
+                            error_data.get("error", error_text),
                         )
-                    except (aiohttp.ContentTypeError, ValueError):
-                        raise AuthError(
-                            f"Token refresh failed: HTTP {response.status} - {error_text}"
-                        )
+                    except (aiohttp.ContentTypeError, ValueError) as parse_err:
+                        err_msg = f"Token refresh failed: HTTP {response.status} - {error_text}"
+                        # Distinguish parsing error from original HTTP error
+                        raise AuthError(err_msg) from parse_err
 
                 token_data = await response.json()
                 _LOGGER.debug("Token refresh response received: %s", token_data)
@@ -229,19 +241,20 @@ class AuthHandler:
                     self._access_token = None
                     self._refresh_token = None
                     self._token_expires_at = None
-                    raise AuthError(
-                        "Token refresh failed: Missing access token in response"
-                    )
+                    err_msg = "Token refresh failed: Missing access token in response"
+                    raise AuthError(err_msg)  # noqa: TRY301
 
                 self._access_token = token_data["access_token"]
                 self._refresh_token = token_data.get(
-                    "refresh_token", self._refresh_token
+                    "refresh_token",
+                    self._refresh_token,
                 )
                 expires_in = token_data.get("expires_in")
                 if expires_in:
                     self._token_expires_at = time.time() + int(expires_in)
                     _LOGGER.debug(
-                        "Refreshed token expires at: %s", self._token_expires_at
+                        "Refreshed token expires at: %s",
+                        self._token_expires_at,
                     )
                 else:
                     self._token_expires_at = None
@@ -249,15 +262,16 @@ class AuthHandler:
                 _LOGGER.info("Access token refreshed successfully.")
 
         except aiohttp.ClientError as req_err:
-            _LOGGER.error("Request error during token refresh: %s", req_err)
+            _LOGGER.exception("Request error during token refresh")
             # Don't clear tokens on temporary network errors
-            raise AuthError(
-                f"Token refresh failed: Request error - {req_err}"
-            ) from req_err
-        except asyncio.TimeoutError as timeout_err:
-            _LOGGER.error("Timeout during token refresh request")
-            raise AuthError("Token refresh failed: Request timed out") from timeout_err
+            err_msg = f"Token refresh failed: Request error - {req_err}"
+            raise AuthError(err_msg) from req_err
+        except TimeoutError as timeout_err:
+            _LOGGER.exception("Timeout during token refresh request")
+            err_msg = "Token refresh failed: Request timed out"
+            raise AuthError(err_msg) from timeout_err
         except Exception as e:
-            _LOGGER.exception("Unexpected error during token refresh: %s", e)
+            _LOGGER.exception("Unexpected error during token refresh")
             # Don't clear tokens on unknown errors
-            raise AuthError(f"Token refresh failed: Unexpected error - {e}") from e
+            err_msg = f"Token refresh failed: Unexpected error - {e}"
+            raise AuthError(err_msg) from e

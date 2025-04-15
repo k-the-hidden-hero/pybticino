@@ -1,0 +1,6 @@
+# Sphinx and dependencies
+sphinx>=4.0 # Use a reasonably modern version of Sphinx
+sphinx-rtd-theme # Read the Docs theme
+myst-parser # For parsing Markdown files like README.md
+aiohttp # Needed for intersphinx linking
+websockets # Needed for intersphinx linking

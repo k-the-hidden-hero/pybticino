@@ -48,7 +48,24 @@ DEFAULT_DEVICE_TYPES: list[str] = [
 
 
 class AsyncAccount:
-    """Async class of a pybticino account, mirroring pyatmo structure."""
+    """Represents a BTicino user account and provides methods to interact with the API.
+
+    This class is the main entry point for interacting with the user's homes and
+    modules after successful authentication. It uses an `AuthHandler` instance
+    to manage authentication tokens and an `aiohttp.ClientSession` (obtained
+    from the `AuthHandler`) to make API requests.
+
+    Attributes:
+        auth_handler (AuthHandler): The authentication handler instance used for
+                                    managing tokens and the HTTP session.
+        user (Optional[str]): The email address of the authenticated user, populated
+                              after calling `async_update_topology`.
+        homes (dict[str, Home]): A dictionary mapping home IDs to `Home` objects,
+                                 populated after calling `async_update_topology`.
+        raw_data (dict[str, Any]): The last raw response received from the
+                                   `/homesdata` endpoint.
+
+    """
 
     def __init__(
         self,
@@ -58,7 +75,24 @@ class AsyncAccount:
         android_version: str = DEFAULT_ANDROID_VERSION,
         device_info: str = DEFAULT_DEVICE_INFO,
     ) -> None:
-        """Initialize the account."""
+        """Initialize the AsyncAccount.
+
+        Args:
+            auth_handler (AuthHandler): An initialized and authenticated
+                                        `AuthHandler` instance.
+            app_version (str): The application version string to use in User-Agent.
+                               Defaults to `DEFAULT_APP_VERSION`.
+            build_number (str): The build number string to use in User-Agent.
+                                Defaults to `DEFAULT_BUILD_NUMBER`.
+            android_version (str): The Android version string to use in User-Agent.
+                                   Defaults to `DEFAULT_ANDROID_VERSION`.
+            device_info (str): The device info string to use in User-Agent.
+                               Defaults to `DEFAULT_DEVICE_INFO`.
+
+        Raises:
+            TypeError: If `auth_handler` is not an instance of `AuthHandler`.
+
+        """
         # Runtime check needs AuthHandler to be defined
         if not isinstance(auth_handler, AuthHandler):
             err_msg = "auth_handler must be an instance of AuthHandler"
@@ -81,7 +115,29 @@ class AsyncAccount:
         json_data: Optional[dict[str, Any]] = None,
         timeout: int = 15,
     ) -> dict[str, Any]:
-        """Make an authenticated async POST request."""
+        """Make an authenticated asynchronous POST request to the BTicino API.
+
+        This is a helper method that handles fetching a valid access token,
+        constructing headers (including Authorization and User-Agent), and
+        making the POST request using the shared `aiohttp.ClientSession`.
+        It also handles common API error responses.
+
+        Args:
+            endpoint (str): The API endpoint path (e.g., '/api/homesdata').
+            params (Optional[dict[str, Any]]): URL parameters for the request.
+            json_data (Optional[dict[str, Any]]): JSON payload for the request body.
+            timeout (int): Request timeout in seconds. Defaults to 15.
+
+        Returns:
+            dict[str, Any]: The JSON response body as a dictionary. Returns an
+                            empty dictionary for 204 No Content responses.
+
+        Raises:
+            AuthError: If obtaining an access token fails.
+            ApiError: If the API returns an error status code (>= 400),
+                      if the request times out, or if a client-side error occurs.
+
+        """
         try:
             access_token = await self.auth_handler.get_access_token()
         except AuthError:
@@ -171,7 +227,22 @@ class AsyncAccount:
         self,
         device_types: Optional[list[str]] = None,
     ) -> None:
-        """Retrieve and process topology data from /homesdata."""
+        """Fetch the user's home topology (homes and modules) from the API.
+
+        This method calls the `/api/homesdata` endpoint to retrieve information
+        about the user's homes and the modules within them. It populates the
+        `self.homes` dictionary with `Home` objects and `self.user` with the
+        user's email address. It also stores the raw response in `self.raw_data`.
+
+        Args:
+            device_types (Optional[list[str]]): A list of device type strings to
+                filter the results. Defaults to `DEFAULT_DEVICE_TYPES`.
+
+        Raises:
+            AuthError: If obtaining an access token fails.
+            ApiError: If the API call fails.
+
+        """
         if device_types is None:
             device_types = DEFAULT_DEVICE_TYPES
 
@@ -234,7 +305,28 @@ class AsyncAccount:
         home_id: str,
         device_types: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Retrieve the status of modules for a specific home."""
+        """Retrieve the current status of modules for a specific home.
+
+        Calls the `/syncapi/v1/homestatus` endpoint. Note that this method
+        currently returns the raw API response dictionary. Further processing
+        to update `Module` objects might be added in the future.
+
+        Args:
+            home_id (str): The ID of the home for which to retrieve the status.
+                           Must exist in `self.homes`.
+            device_types (Optional[list[str]]): A list of device type strings to
+                filter the results. Defaults to `DEFAULT_DEVICE_TYPES`.
+
+        Returns:
+            dict[str, Any]: The raw JSON response from the API containing the
+                            home status, or an empty dictionary if the home_id
+                            is not found (an error is logged).
+
+        Raises:
+            AuthError: If obtaining an access token fails.
+            ApiError: If the API call fails.
+
+        """
         if home_id not in self.homes:
             LOG.error("Home ID %s not found in known homes.", home_id)
             # Or raise a specific error? For now, return empty dict.
@@ -268,7 +360,32 @@ class AsyncAccount:
         timezone: str | None = None,  # Keep timezone optionality
         bridge_id: str | None = None,  # Keep bridge_id optionality
     ) -> dict[str, Any]:
-        """Set the state of a specific module (async version)."""
+        """Set the state of a specific module.
+
+        Calls the `/syncapi/v1/setstate` endpoint to change the state of a module
+        (e.g., unlock a door lock, turn on a light).
+
+        Args:
+            home_id (str): The ID of the home containing the module.
+            module_id (str): The ID of the module to control.
+            state (dict): A dictionary representing the desired state change.
+                          The keys and values depend on the module type
+                          (e.g., `{'lock': False}` for unlocking).
+            timezone (Optional[str]): The timezone string (e.g., 'Europe/Rome').
+                                      Recommended to include based on API logs.
+            bridge_id (Optional[str]): The ID of the bridge module, if the target
+                                       module is connected via a bridge.
+
+        Returns:
+            dict[str, Any]: The raw JSON response from the API, typically
+                            indicating the status of the operation.
+
+        Raises:
+            ValueError: If the provided `home_id` is not found in `self.homes`.
+            AuthError: If obtaining an access token fails.
+            ApiError: If the API call fails.
+
+        """
         # Basic validation
         if home_id not in self.homes:
             LOG.error("Home ID %s not found for setting state.", home_id)
@@ -325,7 +442,27 @@ class AsyncAccount:
         return result
 
     async def async_get_events(self, home_id: str, size: int = 30) -> dict[str, Any]:
-        """Retrieve the event history for a specific home (async version)."""
+        """Retrieve the event history for a specific home.
+
+        Calls the `/api/getevents` endpoint to fetch recent events for the home.
+        Note that this method currently returns the raw API response dictionary.
+        Further processing into `Event` objects might be added later.
+
+        Args:
+            home_id (str): The ID of the home for which to retrieve events.
+                           Must exist in `self.homes`.
+            size (int): The maximum number of events to retrieve. Defaults to 30.
+
+        Returns:
+            dict[str, Any]: The raw JSON response from the API containing the
+                            events, or an empty dictionary if the home_id is not
+                            found (an error is logged).
+
+        Raises:
+            AuthError: If obtaining an access token fails.
+            ApiError: If the API call fails.
+
+        """
         if home_id not in self.homes:
             LOG.error("Home ID %s not found for getting events.", home_id)
             return {}  # Return empty dict or raise?

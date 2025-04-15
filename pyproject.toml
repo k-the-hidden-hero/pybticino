@@ -120,6 +120,7 @@ split-on-trailing-comma = false
 "src/pybticino/__main__.py" = ["T201"] # Updated path
 "src/pybticino/module.py" = ["PGH003"] # Updated path - Check if still relevant
 "src/pybticino/auth.py" = ["ASYNC109"] # Updated path - Check if still relevant
+"docs/conf.py" = ["A001"] # Ignore builtin shadowing for 'copyright'
 
 # Exceptions for tests
 "tests/*" = [ # Keep tests ignores generic for now

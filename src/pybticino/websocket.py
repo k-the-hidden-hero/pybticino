@@ -19,7 +19,25 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class WebsocketClient:
-    """Handles WebSocket connection and push notifications."""
+    """Handles the WebSocket connection for receiving real-time push notifications.
+
+    This client connects to the BTicino WebSocket endpoint, authenticates using
+    an `AuthHandler`, subscribes to updates, and invokes a user-provided
+    asynchronous callback function for each received message. It includes
+    automatic reconnection logic.
+
+    Attributes:
+        _auth_handler (AuthHandler): Instance used for authentication.
+        _message_callback (Callable): Async function called with received messages.
+        _app_version (str): Application version string.
+        _platform (str): Platform identifier string.
+        _websocket (Optional[websockets.ClientConnection]): The active WebSocket connection.
+        _listener_task (Optional[asyncio.Task]): The task running the message listener loop.
+        _is_running (bool): Flag indicating if the client is actively running/connecting.
+        _connection_lock (asyncio.Lock): Lock to prevent race conditions during
+                                         connect/disconnect operations.
+
+    """
 
     def __init__(
         self,
@@ -31,11 +49,19 @@ class WebsocketClient:
         """Initialize the WebSocket client.
 
         Args:
-            auth_handler: Authenticated AuthHandler instance.
-            message_callback: Async function to call when a message is received.
-                              It will be called with the decoded JSON message.
-            app_version: The application version string.
-            platform: The platform string (e.g., 'Android').
+            auth_handler (AuthHandler): An initialized and authenticated
+                                        `AuthHandler` instance.
+            message_callback (Callable[[dict[str, Any]], Awaitable[None]]):
+                An asynchronous function that will be called with each decoded
+                JSON message received from the WebSocket.
+            app_version (str): The application version string. Defaults to
+                               `DEFAULT_APP_VERSION`.
+            platform (str): The platform identifier string. Defaults to
+                            `DEFAULT_PLATFORM`.
+
+        Raises:
+            TypeError: If `auth_handler` is not an instance of `AuthHandler` or
+                       if `message_callback` is not an async function.
 
         """
         if not isinstance(auth_handler, AuthHandler):
@@ -57,7 +83,21 @@ class WebsocketClient:
         )  # Lock to prevent concurrent connect/disconnect
 
     async def _subscribe(self) -> None:
-        """Send the subscription message to the WebSocket server."""
+        """Send the subscription message after connecting to the WebSocket.
+
+        This method constructs and sends the JSON payload required to start
+        receiving push notifications. It waits for an 'ok' status response.
+
+        Raises:
+            PyBticinoException: If the WebSocket is not connected, if the
+                                subscription payload cannot be sent, if a timeout
+                                occurs waiting for the response, or if the
+                                server returns a non-ok status.
+            AuthError: If obtaining an access token fails during subscription.
+            websockets.exceptions.ConnectionClosed: If the connection closes
+                                                    during subscription.
+
+        """
         if not self._websocket:
             err_msg = "WebSocket connection not established."
             raise PyBticinoException(err_msg)
@@ -103,7 +143,23 @@ class WebsocketClient:
             raise PyBticinoException(err_msg) from e
 
     async def _listen(self) -> None:
-        """Listen for messages on the WebSocket."""
+        """Continuously listen for incoming messages on the WebSocket connection.
+
+        This method runs an `async for` loop over the WebSocket connection.
+        For each received message, it attempts to decode it as JSON and passes
+        it to the `_message_callback` provided during initialization.
+
+        It handles JSON decoding errors and exceptions raised by the callback.
+        The loop terminates when the WebSocket connection is closed.
+
+        Raises:
+            websockets.exceptions.ConnectionClosedError: If the connection closes
+                                                         unexpectedly with an error.
+                                                         (ConnectionClosedOK is handled gracefully).
+            asyncio.CancelledError: If the listening task is cancelled.
+            Exception: Any other unexpected error during the listening loop.
+
+        """
         # Ensure connection exists and is not closed before starting to listen
         if (
             not self._websocket or self._websocket.state == State.CLOSED
@@ -167,7 +223,18 @@ class WebsocketClient:
             # Do not set self._is_running = False here
 
     async def connect(self) -> None:
-        """Establish WebSocket connection and start listening."""
+        """Establish the WebSocket connection, subscribe, and start listening.
+
+        Connects to the WebSocket server, sends the subscription message,
+        and creates a background task to listen for incoming messages.
+        Uses a lock to prevent concurrent connection attempts.
+
+        Raises:
+            PyBticinoException: If connection or subscription fails.
+                                Wraps underlying exceptions like `websockets.exceptions`,
+                                `AuthError`, `TimeoutError`.
+
+        """
         async with self._connection_lock:
             if self._is_running:
                 _LOGGER.warning("WebSocket client is already running or connecting.")
@@ -219,7 +286,11 @@ class WebsocketClient:
                 raise PyBticinoException(err_msg) from e
 
     async def disconnect(self) -> None:
-        """Disconnect the WebSocket client."""
+        """Disconnect the WebSocket client gracefully.
+
+        Cancels the listener task and closes the WebSocket connection.
+        Uses a lock to prevent concurrent disconnect operations.
+        """
         async with self._connection_lock:
             if not self._is_running and not self._websocket:
                 _LOGGER.info("WebSocket client already disconnected.")
@@ -260,7 +331,22 @@ class WebsocketClient:
                 _LOGGER.debug("No active WebSocket connection object to close.")
 
     async def run_forever(self, reconnect_delay: int = 30) -> None:
-        """Connect and keep running, attempting to reconnect on failure."""
+        """Connect and maintain the WebSocket connection indefinitely.
+
+        This method runs a loop that attempts to `connect()`. If the connection
+        drops (indicated by the listener task ending or an error during connection),
+        it waits for `reconnect_delay` seconds before attempting to `disconnect()`
+        cleanly and then `connect()` again.
+
+        This method typically runs forever until the client is explicitly stopped
+        (e.g., by cancelling the task running this method or calling `disconnect`
+        from another task).
+
+        Args:
+            reconnect_delay (int): The number of seconds to wait before attempting
+                                   to reconnect after a disconnection. Defaults to 30.
+
+        """
         _LOGGER.info("Starting WebSocket client run_forever loop...")
         while True:
             listener_exception = None  # Track exception from listener task

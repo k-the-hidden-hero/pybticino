@@ -20,7 +20,27 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class AuthHandler:
-    """Handles async authentication and token management using aiohttp."""
+    """Handles asynchronous authentication and token management for the BTicino API.
+
+    This class manages the OAuth2 password grant flow to obtain access and
+    refresh tokens. It automatically handles token expiration and refreshing.
+    It uses an `aiohttp.ClientSession` for making HTTP requests.
+
+    Attributes:
+        _username (str): The user's email address for authentication.
+        _password (str): The user's password for authentication.
+        _client_id (str): The client ID for the API application.
+        _client_secret (str): The client secret for the API application.
+        _scope (str): The requested scope for the access token.
+        _app_version (str): The application version string sent during auth.
+        _access_token (Optional[str]): The current access token.
+        _refresh_token (Optional[str]): The current refresh token.
+        _token_expires_at (Optional[float]): The timestamp when the access token expires.
+        _session (Optional[aiohttp.ClientSession]): The HTTP client session.
+        _managed_session (bool): True if the session was created internally and should
+                                 be closed by this handler, False otherwise.
+
+    """
 
     def __init__(
         self,
@@ -30,7 +50,19 @@ class AuthHandler:
         app_version: str = DEFAULT_APP_VERSION,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> None:
-        """Initialize the authentication handler."""
+        """Initialize the asynchronous authentication handler.
+
+        Args:
+            username (str): The user's email address (BTicino/Netatmo account).
+            password (str): The user's password.
+            scope (str): The requested OAuth scope. Defaults to `DEFAULT_SCOPE`.
+            app_version (str): The application version string. Defaults to
+                               `DEFAULT_APP_VERSION`.
+            session (Optional[aiohttp.ClientSession]): An optional existing
+                `aiohttp.ClientSession` to use for requests. If None, a new
+                session will be created and managed internally.
+
+        """
         self._username = username
         self._password = password
         self._client_id = get_client_id()
@@ -47,7 +79,16 @@ class AuthHandler:
         )  # Flag to know if we should close the session
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create the aiohttp session."""
+        """Get the current `aiohttp.ClientSession` or create one if needed.
+
+        If a session was provided during initialization, it will be returned.
+        Otherwise, if no session exists or the existing one is closed, a new
+        session is created and marked as managed by this handler.
+
+        Returns:
+            aiohttp.ClientSession: The active client session.
+
+        """
         if self._session is None or self._session.closed:
             _LOGGER.debug("Creating new aiohttp ClientSession for AuthHandler.")
             self._session = aiohttp.ClientSession()
@@ -55,7 +96,11 @@ class AuthHandler:
         return self._session
 
     async def close_session(self) -> None:
-        """Close the aiohttp session if it's managed by this instance."""
+        """Close the `aiohttp.ClientSession` if it was created internally.
+
+        If the session was provided externally during initialization, this method
+        does nothing.
+        """
         if self._session and not self._session.closed and self._managed_session:
             await self._session.close()
             self._session = None
@@ -64,13 +109,34 @@ class AuthHandler:
             _LOGGER.debug("Session provided externally, not closing.")
 
     def _is_token_expired(self) -> bool:
-        """Check if the access token is expired or close to expiring."""
+        """Check if the current access token is expired or nearing expiration.
+
+        Considers the token expired if the expiration timestamp is not set or
+        if the current time is within 60 seconds of the expiration time.
+
+        Returns:
+            bool: True if the token is expired or nearing expiration, False otherwise.
+
+        """
         if not self._token_expires_at:
             return True
         return time.time() >= (self._token_expires_at - 60)
 
     async def get_access_token(self) -> str:
-        """Return the current access token, refreshing if necessary."""
+        """Return a valid access token, automatically authenticating or refreshing.
+
+        This method checks if the current token is valid. If it's expired or
+        nearing expiration, it attempts to refresh it using the refresh token.
+        If refreshing fails or no refresh token is available, it performs a full
+        authentication using the username and password.
+
+        Returns:
+            str: A valid access token.
+
+        Raises:
+            AuthError: If authentication or token refresh fails persistently.
+
+        """
         if self._is_token_expired():
             _LOGGER.debug("Token is expired or nearing expiration.")
             if self._refresh_token:
@@ -98,7 +164,19 @@ class AuthHandler:
         return self._access_token
 
     async def authenticate(self) -> None:
-        """Perform authentication to get access and refresh tokens."""
+        """Perform the initial authentication using username and password.
+
+        This method makes a POST request to the token endpoint with the
+        'password' grant type to obtain the initial access and refresh tokens.
+        It stores the tokens and their expiration time internally.
+
+        Raises:
+            AuthError: If authentication fails due to invalid credentials,
+                       network errors, timeouts, or unexpected issues.
+            ApiError: If the API returns a non-success status code other than
+                      common authentication failures handled by AuthError.
+
+        """
         url = BASE_URL + TOKEN_ENDPOINT
         payload = {
             "grant_type": "password",
@@ -183,7 +261,20 @@ class AuthHandler:
             raise AuthError(err_msg) from e
 
     async def _refresh_access_token(self) -> None:
-        """Refresh the access token using the refresh token."""
+        """Refresh the access token using the stored refresh token.
+
+        This method makes a POST request to the token endpoint with the
+        'refresh_token' grant type. It updates the internal access token,
+        refresh token (if provided in the response), and expiration time.
+
+        Raises:
+            AuthError: If no refresh token is available, if the refresh attempt
+                       fails due to an invalid grant or request, network errors,
+                       timeouts, or unexpected issues.
+            ApiError: If the API returns a non-success status code other than
+                      common refresh failures handled by AuthError.
+
+        """
         if not self._refresh_token:
             err_msg = "Cannot refresh token: No refresh token available."
             raise AuthError(err_msg)

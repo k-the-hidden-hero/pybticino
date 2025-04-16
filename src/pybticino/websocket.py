@@ -177,10 +177,17 @@ class WebsocketClient:
         try:
             _LOGGER.debug("_listen: Entering async for message loop...")
             async for message_raw in self._websocket:
+                _LOGGER.debug(
+                    "Raw message received from websocket: %s",
+                    message_raw,
+                )  # ADDED LOG
                 # Inner try/except handles errors *during* processing of a single message
                 try:
                     message = json.loads(message_raw)
-                    _LOGGER.debug("Received WebSocket message: %s", message)
+                    _LOGGER.debug(
+                        "Successfully parsed JSON message: %s",
+                        message,
+                    )  # MODIFIED LOG
                     # Process the message - Call the user-provided callback
                     # We assume the callback handles different message types if needed
                     await self._message_callback(message)

@@ -355,8 +355,8 @@ class WebsocketClient:
         """
         _LOGGER.info("Starting WebSocket client run_forever loop...")
         while True:
-            listener_exception = None  # Track exception from listener task
-            try:
+            try:  # Wrap the main loop content in try/except CancelledError
+                listener_exception = None  # Track exception from listener task
                 # Attempt to connect (includes subscription and starting listener)
                 await self.connect()
 
@@ -378,15 +378,10 @@ class WebsocketClient:
                                 # Exception occurred, will trigger reconnect below
                     except asyncio.CancelledError:
                         _LOGGER.info(
-                            "run_forever: Listener task was cancelled during shutdown.",
+                            "run_forever: Listener task was cancelled.",
                         )
-                        # If cancellation was triggered by disconnect(), _is_running will be False
-                        if not self._is_running:
-                            break  # Exit loop cleanly
-                        # If cancelled externally but not via disconnect(), still attempt reconnect?
-                        _LOGGER.warning(
-                            "Listener task cancelled externally, attempting reconnect.",
-                        )
+                        # Re-raise CancelledError to exit the outer try block and the loop
+                        raise
                     except (
                         Exception
                     ) as e:  # Catch blind exception is okay here for loop robustness
@@ -414,8 +409,13 @@ class WebsocketClient:
                     _LOGGER.info(
                         "run_forever: Shutdown initiated or disconnect called. Exiting loop.",
                     )
-                    break
+                    break  # Exit loop if not supposed to be running
 
+            except (
+                asyncio.CancelledError
+            ):  # Catch cancellation from connect() or _subscribe() or re-raised from _listen()
+                _LOGGER.info("run_forever loop cancelled. Exiting.")
+                break  # Exit the while loop
             except PyBticinoException:
                 # Errors during connect() or _subscribe()
                 _LOGGER.exception(
@@ -436,4 +436,10 @@ class WebsocketClient:
                 "Waiting %d seconds before reconnect attempt...",
                 reconnect_delay,
             )
-            await asyncio.sleep(reconnect_delay)
+            try:
+                await asyncio.sleep(reconnect_delay)
+            except asyncio.CancelledError:
+                _LOGGER.info(
+                    "Reconnect delay interrupted by cancellation. Exiting loop.",
+                )
+                break  # Exit the while loop if cancelled during sleep

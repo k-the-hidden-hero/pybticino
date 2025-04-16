@@ -82,6 +82,10 @@ class WebsocketClient:
             asyncio.Lock()
         )  # Lock to prevent concurrent connect/disconnect
 
+    def get_listener_task(self) -> asyncio.Task | None:
+        """Return the internal listener task, if active."""
+        return self._listener_task
+
     async def _subscribe(self) -> None:
         """Send the subscription message after connecting to the WebSocket.
 

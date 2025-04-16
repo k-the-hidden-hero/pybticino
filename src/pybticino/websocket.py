@@ -110,7 +110,6 @@ class WebsocketClient:
             # Ensure token is valid before subscribing (using async getter)
             access_token = await self._auth_handler.get_access_token()  # Added await
             subscribe_message = {
-                "filter": "silent",  # As seen in logs for PUSH_WS_URL
                 "access_token": access_token,
                 "app_type": "app_camera",  # As seen in logs for PUSH_WS_URL
                 "action": "Subscribe",

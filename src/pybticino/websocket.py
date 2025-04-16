@@ -243,8 +243,14 @@ class WebsocketClient:
             self._is_running = True  # Mark as attempting to run
             _LOGGER.info("Connecting to WebSocket: %s", PUSH_WS_URL)
             try:
-                # Use default SSL context for wss
-                ssl_context = ssl.create_default_context()
+                # Create SSL context in executor to avoid blocking calls
+                loop = asyncio.get_running_loop()
+                ssl_context = await loop.run_in_executor(
+                    None,
+                    ssl.create_default_context,
+                )
+                _LOGGER.debug("SSL context created in executor.")
+
                 # Increase timeout for connection establishment and add keepalive pings
                 self._websocket = await websockets.connect(
                     PUSH_WS_URL,

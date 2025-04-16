@@ -143,6 +143,6 @@ websocket_ring.log
 
 # Copied pyatmo library (temporary)
 pyatmo/
-workflows
 call_incoming.xml
 uv.lock
+.ruff_cache

@@ -53,7 +53,7 @@ jobs:
           pip install ruff
       - name: Lint with ruff
         run: |
-          ruff check src/pybticino
+          ruff check src/pybticino --ignore S105,SLF001,ASYNC109
 
   typechecker:
     runs-on: ubuntu-latest

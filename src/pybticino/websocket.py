@@ -245,17 +245,22 @@ class WebsocketClient:
                 return
 
             self._is_running = True  # Mark as attempting to run
-            _LOGGER.info("Connecting to WebSocket: %s", PUSH_WS_URL)
+            _LOGGER.info(
+                "WebsocketClient.connect: Attempting connection to %s",
+                PUSH_WS_URL,
+            )
             try:
+                _LOGGER.debug("WebsocketClient.connect: Creating SSL context...")
                 # Create SSL context in executor to avoid blocking calls
                 loop = asyncio.get_running_loop()
                 ssl_context = await loop.run_in_executor(
                     None,
                     ssl.create_default_context,
                 )
-                _LOGGER.debug("SSL context created in executor.")
+                _LOGGER.debug("WebsocketClient.connect: SSL context created.")
 
                 # Increase timeout for connection establishment and add keepalive pings
+                _LOGGER.debug("WebsocketClient.connect: Calling websockets.connect...")
                 self._websocket = await websockets.connect(
                     PUSH_WS_URL,
                     ssl=ssl_context,
@@ -264,23 +269,28 @@ class WebsocketClient:
                     ping_interval=20,  # Send a ping every 20 seconds
                     ping_timeout=20,  # Wait up to 20 seconds for pong response
                 )
-                _LOGGER.info("WebSocket connection established.")
+                _LOGGER.info("WebsocketClient.connect: websockets.connect successful.")
                 _LOGGER.debug(
-                    "WebSocket state: %s",
+                    "WebsocketClient.connect: WebSocket state after connect: %s",
                     self._websocket.state,
-                )  # Log state after connect
+                )
 
                 # Subscribe after connecting
+                _LOGGER.debug("WebsocketClient.connect: Calling self._subscribe...")
                 await self._subscribe()
+                _LOGGER.info("WebsocketClient.connect: self._subscribe successful.")
 
                 # Start the listener task
+                _LOGGER.debug("WebsocketClient.connect: Creating listener task...")
                 self._listener_task = asyncio.create_task(self._listen())
-                _LOGGER.info("WebSocket listener task started.")
+                _LOGGER.info(
+                    "WebsocketClient.connect: Listener task created and started.",
+                )
 
             except Exception as e:
                 _LOGGER.exception(
-                    "Failed to connect or subscribe to WebSocket",
-                )  # Use exception
+                    "WebsocketClient.connect: Failed during connection or subscription process",
+                )
                 self._is_running = False  # Reset running state on failure
                 if (
                     self._websocket

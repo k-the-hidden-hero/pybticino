@@ -61,6 +61,7 @@ local_scheme = "no-local-version"
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
+norecursedirs = ["examples", "docs", ".tox", "test_env"] # Aggiunto per escludere directory
 
 [tool.mypy]
 ignore_missing_imports = true
@@ -141,6 +142,8 @@ split-on-trailing-comma = false
     "ARG001",
     "ANN204",
 ]
+# Specific ignores for test_basic.py
+"tests/test_basic.py" = ["INP001", "PT018", "BLE001", "D401", "TRY003", "EM101"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25

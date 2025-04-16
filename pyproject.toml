@@ -11,7 +11,6 @@ authors = [{ name = "k-the-hidden-hero", email = "git@k8s.one" }] # Updated
 maintainers = [{ name = "k-the-hidden-hero", email = "git@k8s.one" }] # Updated
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "aiohttp>=3.7.4,<4.0.0",
     "websockets>=14.0",
 ]
 classifiers = [

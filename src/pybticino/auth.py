@@ -142,9 +142,10 @@ class AuthHandler:
             if self._refresh_token:
                 try:
                     await self._refresh_access_token()
-                except AuthError:
+                except (AuthError, ApiError) as e:
                     _LOGGER.warning(
-                        "Token refresh failed, attempting full authentication.",
+                        "Token refresh failed (%s), attempting full authentication.",
+                        type(e).__name__,
                     )
                     await self.authenticate()  # Fallback to full auth
             else:
@@ -304,26 +305,56 @@ class AuthHandler:
                         response.status,
                         error_text,
                     )
-                    # Clear tokens on persistent refresh failure (like invalid grant)
-                    self._access_token = None
-                    self._refresh_token = None
-                    self._token_expires_at = None
                     try:
                         error_data = await response.json()
+                        
+                        # Only clear tokens for actual auth-related failures
                         if response.status == 400 and error_data.get("error") in [
                             "invalid_grant",
                             "invalid_request",
                         ]:
+                            # Clear tokens on persistent refresh failure (like invalid grant)
+                            self._access_token = None
+                            self._refresh_token = None
+                            self._token_expires_at = None
                             err_msg = f"Token refresh failed: {error_data.get('error')}"
                             raise AuthError(err_msg)
+                        
+                        # For server errors (500) or other errors, keep refresh token
+                        if response.status >= 500:
+                            # Server error - don't clear refresh token, raise AuthError to trigger fallback
+                            _LOGGER.warning(
+                                "Server error during token refresh (code %s), keeping refresh token for retry",
+                                error_data.get("error", {}).get("code", "unknown")
+                            )
+                            err_msg = f"Server error during token refresh: {error_data.get('error', error_text)}"
+                            raise AuthError(err_msg)
+                        
+                        # Other 4xx client errors - keep refresh token but raise ApiError
+                        _LOGGER.warning(
+                            "Client error during token refresh (%s), keeping refresh token",
+                            response.status
+                        )
                         raise ApiError(
                             response.status,
                             error_data.get("error", error_text),
                         )
                     except (aiohttp.ContentTypeError, ValueError) as parse_err:
-                        err_msg = f"Token refresh failed: HTTP {response.status} - {error_text}"
-                        # Distinguish parsing error from original HTTP error
-                        raise AuthError(err_msg) from parse_err
+                        # Can't parse JSON response - treat as server error if 5xx, auth error if 4xx
+                        if response.status >= 500:
+                            err_msg = f"Server error during token refresh: HTTP {response.status} - {error_text}"
+                            raise AuthError(err_msg) from parse_err
+                        elif response.status == 400 or response.status == 401:
+                            # Likely auth failure if we can't parse 400/401 response
+                            self._access_token = None
+                            self._refresh_token = None
+                            self._token_expires_at = None
+                            err_msg = f"Token refresh failed: HTTP {response.status} - {error_text}"
+                            raise AuthError(err_msg) from parse_err
+                        else:
+                            # Other client errors - keep refresh token
+                            err_msg = f"Token refresh failed: HTTP {response.status} - {error_text}"
+                            raise AuthError(err_msg) from parse_err
 
                 token_data = await response.json()
                 _LOGGER.debug("Token refresh response received: %s", token_data)

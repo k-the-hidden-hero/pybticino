@@ -270,7 +270,7 @@ class WebsocketClient:
                 self._websocket = await websockets.connect(
                     PUSH_WS_URL,
                     ssl=ssl_context,
-                    open_timeout=20,
+                    open_timeout=30,
                     close_timeout=10,
                     ping_interval=20,  # Send a ping every 20 seconds
                     ping_timeout=20,  # Wait up to 20 seconds for pong response
@@ -380,8 +380,6 @@ class WebsocketClient:
             try:
                 # Attempt to connect (includes subscription and starting listener)
                 # connect() will raise exceptions on failure
-                await self.connect()
-
                 await self.connect()
 
                 # If connect succeeds, the listener task is running.

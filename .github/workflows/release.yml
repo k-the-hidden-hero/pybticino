@@ -5,8 +5,6 @@ on:
     tags:
       - "v*"
 
-permissions: {}
-
 jobs:
   # ---- Quality gates (same checks as CI) ----
   lint:
@@ -85,13 +83,12 @@ jobs:
           path: dist/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Release ${{ github.ref_name }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          files: dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes
 
   # ---- Publish to PyPI ----
   publish-pypi:
@@ -102,7 +99,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/pybticino
     permissions:
-      id-token: write  # Required for Trusted Publisher (OIDC)
+      id-token: write
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -112,5 +109,3 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        # No password needed — uses OIDC Trusted Publisher
-        # Configure at https://pypi.org/manage/project/pybticino/settings/publishing/

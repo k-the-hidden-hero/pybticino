@@ -110,7 +110,6 @@ class WebsocketClient:
             access_token = await self._auth_handler.get_access_token()  # Added await
             subscribe_message = {
                 "action": "Subscribe",
-                "filter": "silent",
                 "access_token": access_token,
                 "app_type": "app_camera",
                 "platform": self._platform,
@@ -275,13 +274,16 @@ class WebsocketClient:
 
                 # Increase timeout for connection establishment and add keepalive pings
                 _LOGGER.debug("WebsocketClient.connect: Calling websockets.connect...")
+                # The official Netatmo app does not use application-level ping/pong.
+                # Sending pings can cause the server to drop the connection after ~10min.
+                # We rely on TCP keepalive instead, matching the app's behavior.
                 self._websocket = await websockets.connect(
                     PUSH_WS_URL,
                     ssl=ssl_context,
                     open_timeout=30,
                     close_timeout=10,
-                    ping_interval=20,  # Send a ping every 20 seconds
-                    ping_timeout=20,  # Wait up to 20 seconds for pong response
+                    ping_interval=None,
+                    ping_timeout=None,
                 )
                 _LOGGER.info("WebsocketClient.connect: websockets.connect successful.")
                 _LOGGER.debug(

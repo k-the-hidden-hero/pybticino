@@ -120,14 +120,24 @@ class WebsocketClient:
             await self._websocket.send(json.dumps(subscribe_message))
 
             # Wait for the confirmation message (simple 'ok' status)
-            response_raw = await asyncio.wait_for(self._websocket.recv(), timeout=10)
+            response_raw = await asyncio.wait_for(self._websocket.recv(), timeout=30)
             response = json.loads(response_raw)
             _LOGGER.debug("Subscription response: %s", response)
             if response.get("status") == "ok":
                 _LOGGER.info("WebSocket subscription successful.")
+            elif "error" in response:
+                error_info = response["error"]
+                err_code = error_info.get("code", "unknown")
+                err_message = error_info.get("message", "Unknown error")
+                _LOGGER.error(
+                    "WebSocket subscription rejected by server: code=%s, message=%s",
+                    err_code,
+                    err_message,
+                )
+                err_msg = f"WebSocket subscription rejected: [{err_code}] {err_message}"
+                raise PyBticinoException(err_msg)
             else:
-                # Handle potential errors like expired token etc. if server sends specific codes
-                err_msg = f"WebSocket subscription failed: {response}"
+                err_msg = f"WebSocket subscription unexpected response: {response}"
                 raise PyBticinoException(err_msg)
         except AuthError:
             _LOGGER.exception("Authentication error during WebSocket subscription")

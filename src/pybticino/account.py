@@ -113,7 +113,7 @@ class AsyncAccount:
         endpoint: str,
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
-        timeout: int = 15,
+        timeout: int = 30,
     ) -> dict[str, Any]:
         """Make an authenticated asynchronous POST request to the BTicino API.
 

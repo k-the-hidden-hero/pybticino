@@ -22,7 +22,7 @@ def get_client_id() -> str:
     try:
         # Ensure correct padding if needed, though standard encoding usually handles it
         return base64.b64decode(_ENCODED_CLIENT_ID).decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError):
+    except binascii.Error, UnicodeDecodeError:
         # Log error or raise a specific exception if decoding fails
         _LOGGER.exception("Error decoding client ID")
         return ""
@@ -32,7 +32,7 @@ def get_client_secret() -> str:
     """Return the Base64 decoded client secret."""
     try:
         return base64.b64decode(_ENCODED_CLIENT_SECRET).decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError):
+    except binascii.Error, UnicodeDecodeError:
         _LOGGER.exception("Error decoding client secret")
         return ""
 
@@ -61,19 +61,14 @@ def build_user_agent(
     """Build the User-Agent string based on components."""
     # Format based on observed User-Agent:
     # NetatmoApp(Security/v4.1.1.3/4401103) Android(13/Google/sdk_gphone64_arm64)
-    return (
-        f"NetatmoApp(Security/v{app_version}/{build_number}) "
-        f"Android({android_version}/{device_info})"
-    )
+    return f"NetatmoApp(Security/v{app_version}/{build_number}) Android({android_version}/{device_info})"
 
 
 # API Endpoints
 HOMESDATA_ENDPOINT = "/api/homesdata"
 HOMESTATUS_ENDPOINT = "/syncapi/v1/homestatus"
 SETSTATE_ENDPOINT = "/syncapi/v1/setstate"
-GETEVENTS_ENDPOINT = (
-    "/api/getevents"  # Note: Log shows /%2Fapi%2Fgetevents, using decoded path
-)
+GETEVENTS_ENDPOINT = "/api/getevents"  # Note: Log shows /%2Fapi%2Fgetevents, using decoded path
 ADD_PUSH_CONTEXT_ENDPOINT = "/api/addpushcontext"
 MODIFY_USER_ENDPOINT = "/api/modifyuser"
 GET_HOME_USERS_ENDPOINT = "/api/gethomeusers"

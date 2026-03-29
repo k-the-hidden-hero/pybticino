@@ -2,7 +2,6 @@
 
 import logging
 import time
-from typing import Optional
 
 import aiohttp
 
@@ -48,7 +47,7 @@ class AuthHandler:
         password: str,
         scope: str = DEFAULT_SCOPE,
         app_version: str = DEFAULT_APP_VERSION,
-        session: Optional[aiohttp.ClientSession] = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> None:
         """Initialize the asynchronous authentication handler.
 
@@ -69,14 +68,12 @@ class AuthHandler:
         self._client_secret = get_client_secret()
         self._scope = scope
         self._app_version = app_version
-        self._access_token: Optional[str] = None
-        self._refresh_token: Optional[str] = None
-        self._token_expires_at: Optional[float] = None
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._token_expires_at: float | None = None
         # Use provided session or create a new one
         self._session = session
-        self._managed_session = (
-            session is None
-        )  # Flag to know if we should close the session
+        self._managed_session = session is None  # Flag to know if we should close the session
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get the current `aiohttp.ClientSession` or create one if needed.
@@ -208,13 +205,8 @@ class AuthHandler:
                     )
                     try:
                         error_data = await response.json()
-                        if (
-                            response.status == 400
-                            and error_data.get("error") == "invalid_grant"
-                        ):
-                            err_msg = (
-                                "Authentication failed: Invalid credentials or grant"
-                            )
+                        if response.status == 400 and error_data.get("error") == "invalid_grant":
+                            err_msg = "Authentication failed: Invalid credentials or grant"
                             raise AuthError(err_msg)
                         # Raise generic ApiError for other 4xx/5xx based on JSON if possible
                         raise ApiError(
@@ -230,12 +222,9 @@ class AuthHandler:
                 token_data = await response.json()
                 _LOGGER.debug("Token response received: %s", token_data)
 
-                if (
-                    "access_token" not in token_data
-                    or "refresh_token" not in token_data
-                ):
+                if "access_token" not in token_data or "refresh_token" not in token_data:
                     err_msg = "Authentication failed: Missing tokens in response"
-                    raise AuthError(err_msg)  # noqa: TRY301
+                    raise AuthError(err_msg)
 
                 self._access_token = token_data["access_token"]
                 self._refresh_token = token_data["refresh_token"]
@@ -307,7 +296,7 @@ class AuthHandler:
                     )
                     try:
                         error_data = await response.json()
-                        
+
                         # Only clear tokens for actual auth-related failures
                         if response.status == 400 and error_data.get("error") in [
                             "invalid_grant",
@@ -319,21 +308,20 @@ class AuthHandler:
                             self._token_expires_at = None
                             err_msg = f"Token refresh failed: {error_data.get('error')}"
                             raise AuthError(err_msg)
-                        
+
                         # For server errors (500) or other errors, keep refresh token
                         if response.status >= 500:
                             # Server error - don't clear refresh token, raise AuthError to trigger fallback
                             _LOGGER.warning(
                                 "Server error during token refresh (code %s), keeping refresh token for retry",
-                                error_data.get("error", {}).get("code", "unknown")
+                                error_data.get("error", {}).get("code", "unknown"),
                             )
                             err_msg = f"Server error during token refresh: {error_data.get('error', error_text)}"
                             raise AuthError(err_msg)
-                        
+
                         # Other 4xx client errors - keep refresh token but raise ApiError
                         _LOGGER.warning(
-                            "Client error during token refresh (%s), keeping refresh token",
-                            response.status
+                            "Client error during token refresh (%s), keeping refresh token", response.status
                         )
                         raise ApiError(
                             response.status,
@@ -364,7 +352,7 @@ class AuthHandler:
                     self._refresh_token = None
                     self._token_expires_at = None
                     err_msg = "Token refresh failed: Missing access token in response"
-                    raise AuthError(err_msg)  # noqa: TRY301
+                    raise AuthError(err_msg)
 
                 self._access_token = token_data["access_token"]
                 self._refresh_token = token_data.get(

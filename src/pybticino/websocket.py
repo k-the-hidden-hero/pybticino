@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+import inspect
 import json
 import logging
 import ssl
@@ -67,7 +68,7 @@ class WebsocketClient:
         if not isinstance(auth_handler, AuthHandler):
             err_msg = "auth_handler must be an instance of AuthHandler"
             raise TypeError(err_msg)
-        if not asyncio.iscoroutinefunction(message_callback):
+        if not inspect.iscoroutinefunction(message_callback):
             err_msg = "message_callback must be an async function"
             raise TypeError(err_msg)
 
@@ -78,9 +79,7 @@ class WebsocketClient:
         self._websocket: websockets.ClientConnection | None = None  # Updated type hint
         self._listener_task: asyncio.Task | None = None
         self._is_running = False
-        self._connection_lock = (
-            asyncio.Lock()
-        )  # Lock to prevent concurrent connect/disconnect
+        self._connection_lock = asyncio.Lock()  # Lock to prevent concurrent connect/disconnect
 
     def get_listener_task(self) -> asyncio.Task | None:
         """Return the internal listener task, if active."""
@@ -129,7 +128,7 @@ class WebsocketClient:
             else:
                 # Handle potential errors like expired token etc. if server sends specific codes
                 err_msg = f"WebSocket subscription failed: {response}"
-                raise PyBticinoException(err_msg)  # noqa: TRY301
+                raise PyBticinoException(err_msg)
         except AuthError:
             _LOGGER.exception("Authentication error during WebSocket subscription")
             raise  # Re-raise AuthError to be handled by connect/run_forever
@@ -164,9 +163,7 @@ class WebsocketClient:
 
         """
         # Ensure connection exists and is not closed before starting to listen
-        if (
-            not self._websocket or self._websocket.state == State.CLOSED
-        ):  # Use state check
+        if not self._websocket or self._websocket.state == State.CLOSED:  # Use state check
             _LOGGER.error("Cannot listen, WebSocket is not connected or is closed.")
             return
 
@@ -299,8 +296,7 @@ class WebsocketClient:
                 )
                 self._is_running = False  # Reset running state on failure
                 if (
-                    self._websocket
-                    and self._websocket.state != State.CLOSED  # Use state check
+                    self._websocket and self._websocket.state != State.CLOSED  # Use state check
                 ):  # Check if not closed before trying to close
                     # Use contextlib.suppress for cleaner error ignoring
                     with suppress(websockets.exceptions.WebSocketException):

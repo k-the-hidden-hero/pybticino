@@ -14,14 +14,14 @@ __version__ = "0.1.0"  # Update version to reflect refactoring
 
 # Define what gets imported with 'from pybticino import *'
 __all__ = [
-    "AuthHandler",
+    "ApiError",
     "AsyncAccount",
-    "WebsocketClient",
+    "AuthError",
+    "AuthHandler",
+    "Event",
     "Home",
     "Module",
-    "Event",
     "PyBticinoException",
-    "AuthError",
-    "ApiError",
+    "WebsocketClient",
     "__version__",
 ]

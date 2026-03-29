@@ -1,7 +1,7 @@
 """Data models for pybticino."""
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 # Placeholder models - To be refined based on API responses
 
@@ -25,7 +25,7 @@ class Module:
     id: str
     name: str
     type: str
-    bridge: Optional[str] = None
+    bridge: str | None = None
     # Add other common attributes observed in homesdata/homestatus
     raw_data: dict[str, Any] = field(default_factory=dict)  # Store the raw dictionary
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 
@@ -98,7 +98,7 @@ class AsyncAccount:
             err_msg = "auth_handler must be an instance of AuthHandler"
             raise TypeError(err_msg)
         self.auth_handler: AuthHandler = auth_handler
-        self.user: Optional[str] = None  # Store user email if available
+        self.user: str | None = None  # Store user email if available
         self.homes: dict[str, Home] = {}  # Store Home objects keyed by home_id
         self.raw_data: dict[str, Any] = {}  # Store last raw homesdata response
 
@@ -111,8 +111,8 @@ class AsyncAccount:
     async def _async_post_api_request(
         self,
         endpoint: str,
-        params: Optional[dict[str, Any]] = None,
-        json_data: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
+        json_data: dict[str, Any] | None = None,
         timeout: int = 15,
     ) -> dict[str, Any]:
         """Make an authenticated asynchronous POST request to the BTicino API.
@@ -162,10 +162,7 @@ class AsyncAccount:
         LOG.debug("Making ASYNC POST request to %s", url)
         LOG.debug(
             "Headers: %s",
-            {
-                k: (v[:30] + "..." if k == "Authorization" else v)
-                for k, v in headers.items()
-            },
+            {k: (v[:30] + "..." if k == "Authorization" else v) for k, v in headers.items()},
         )
         LOG.debug("Params: %s", params)
         LOG.debug("JSON Data: %s", json_data)
@@ -192,13 +189,11 @@ class AsyncAccount:
                         # Try to parse specific error format
                         error_content = await response.json()
                         error_message = (
-                            error_content.get("error", {}).get("message")
-                            or error_content.get("error")
-                            or error_text
+                            error_content.get("error", {}).get("message") or error_content.get("error") or error_text
                         )
-                    except (aiohttp.ContentTypeError, ValueError):
+                    except aiohttp.ContentTypeError, ValueError:
                         error_message = error_text
-                    raise ApiError(response.status, error_message)  # noqa: TRY301
+                    raise ApiError(response.status, error_message)
 
                 # Handle empty response body for certain status codes if necessary
                 if response.status == 204:  # No Content
@@ -225,7 +220,7 @@ class AsyncAccount:
 
     async def async_update_topology(
         self,
-        device_types: Optional[list[str]] = None,
+        device_types: list[str] | None = None,
     ) -> None:
         """Fetch the user's home topology (homes and modules) from the API.
 
@@ -303,7 +298,7 @@ class AsyncAccount:
     async def async_get_home_status(
         self,
         home_id: str,
-        device_types: Optional[list[str]] = None,
+        device_types: list[str] | None = None,
     ) -> dict[str, Any]:
         """Retrieve the current status of modules for a specific home.
 

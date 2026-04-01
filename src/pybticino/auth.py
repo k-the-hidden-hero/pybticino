@@ -1,5 +1,6 @@
 """Async Authentication handler for pybticino."""
 
+from collections.abc import Awaitable, Callable
 import logging
 import time
 
@@ -48,6 +49,7 @@ class AuthHandler:
         scope: str = DEFAULT_SCOPE,
         app_version: str = DEFAULT_APP_VERSION,
         session: aiohttp.ClientSession | None = None,
+        token_callback: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the asynchronous authentication handler.
 
@@ -60,6 +62,10 @@ class AuthHandler:
             session (Optional[aiohttp.ClientSession]): An optional existing
                 `aiohttp.ClientSession` to use for requests. If None, a new
                 session will be created and managed internally.
+            token_callback: An optional async callback invoked whenever tokens
+                change (after authentication or refresh). Receives a dict with
+                keys: access_token, refresh_token, expires_at. Useful for
+                persisting tokens across restarts.
 
         """
         self._username = username
@@ -71,6 +77,7 @@ class AuthHandler:
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._token_expires_at: float | None = None
+        self._token_callback = token_callback
         # Use provided session or create a new one
         self._session = session
         self._managed_session = session is None  # Flag to know if we should close the session
@@ -104,6 +111,43 @@ class AuthHandler:
             _LOGGER.debug("Managed aiohttp session closed by AuthHandler.")
         elif self._session and not self._managed_session:
             _LOGGER.debug("Session provided externally, not closing.")
+
+    def set_tokens(
+        self,
+        access_token: str,
+        refresh_token: str,
+        expires_at: float | None = None,
+    ) -> None:
+        """Inject existing tokens, e.g. restored from persistent storage.
+
+        This allows callers to restore a previous session without performing
+        a full username/password authentication.
+
+        Args:
+            access_token: A previously obtained access token.
+            refresh_token: A previously obtained refresh token.
+            expires_at: The timestamp when the access token expires.
+                If None, the token will be considered expired and a refresh
+                will be attempted on the next get_access_token() call.
+
+        """
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+        self._token_expires_at = expires_at
+        _LOGGER.debug("Tokens injected via set_tokens (expires_at=%s)", expires_at)
+
+    async def _notify_token_change(self) -> None:
+        """Call the token_callback if one was provided."""
+        if self._token_callback and self._access_token and self._refresh_token:
+            token_data = {
+                "access_token": self._access_token,
+                "refresh_token": self._refresh_token,
+                "expires_at": self._token_expires_at,
+            }
+            try:
+                await self._token_callback(token_data)
+            except Exception:
+                _LOGGER.exception("Error in token_callback")
 
     def _is_token_expired(self) -> bool:
         """Check if the current access token is expired or nearing expiration.
@@ -236,6 +280,7 @@ class AuthHandler:
                     self._token_expires_at = None
                     _LOGGER.warning("No 'expires_in' found in token response.")
                 _LOGGER.info("Authentication successful. Access token obtained.")
+                await self._notify_token_change()
 
         except aiohttp.ClientError as req_err:
             _LOGGER.exception("Request error during authentication")
@@ -370,6 +415,7 @@ class AuthHandler:
                     self._token_expires_at = None
                     _LOGGER.warning("No 'expires_in' found in token refresh response.")
                 _LOGGER.info("Access token refreshed successfully.")
+                await self._notify_token_change()
 
         except aiohttp.ClientError as req_err:
             _LOGGER.exception("Request error during token refresh")

@@ -239,6 +239,25 @@ class WebsocketClient:
             _LOGGER.info("WebSocket listener loop finished.")
             # Do not set self._is_running = False here
 
+    async def resubscribe(self) -> None:
+        """Re-subscribe on the existing connection with a fresh token.
+
+        Refreshes the OAuth token and sends a new Subscribe message on the
+        current WebSocket connection. This keeps the session alive without
+        disconnecting and reconnecting. Matches the official Android app behavior.
+
+        Raises:
+            PyBticinoException: If no active connection or subscription fails.
+
+        """
+        if not self._websocket or not self._is_running:
+            err_msg = "Cannot resubscribe: no active WebSocket connection."
+            raise PyBticinoException(err_msg)
+
+        _LOGGER.info("Re-subscribing with fresh token on existing connection...")
+        await self._subscribe()
+        _LOGGER.info("Re-subscribe successful, connection kept alive.")
+
     async def connect(self) -> None:
         """Establish the WebSocket connection, subscribe, and start listening.
 
@@ -254,8 +273,9 @@ class WebsocketClient:
         """
         async with self._connection_lock:
             if self._is_running:
-                _LOGGER.warning("WebSocket client is already running or connecting.")
-                return
+                _LOGGER.warning("WebSocket client is already running or connecting. Resetting state.")
+                # Force reset to allow reconnection — prevents stuck state after failed reconnect
+                self._is_running = False
 
             self._is_running = True  # Mark as attempting to run
             _LOGGER.info(

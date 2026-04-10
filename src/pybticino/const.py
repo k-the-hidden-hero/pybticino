@@ -76,5 +76,6 @@ UPDATE_SESSION_ENDPOINT = "/api/updatesession"
 
 # Other hosts / WS URLs
 PUSH_WS_URL = "wss://app-ws.netatmo.net/ws/"  # For push notifications (app_camera)
-RTC_WS_URL = "wss://app.netatmo.net/appws/"  # For WebRTC signaling (app_security)
+RTC_WS_URL = "wss://app-ws.netatmo.net/appws/"  # For WebRTC signaling (app_security)
+TURN_ENDPOINT = "/turn"  # POST with bearer token, body: client_type=user
 NEWS_HOST = "api-news.netatmo.net"

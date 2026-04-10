@@ -7,6 +7,7 @@ from .auth import AuthHandler
 # Import exceptions for easier handling
 from .exceptions import ApiError, AuthError, PyBticinoException
 from .models import Event, Home, Module  # Expose models
+from .signaling import SignalingClient
 from .websocket import WebsocketClient
 
 # Define package version (consider using importlib.metadata in the future)
@@ -22,6 +23,7 @@ __all__ = [
     "Home",
     "Module",
     "PyBticinoException",
+    "SignalingClient",
     "WebsocketClient",
     "__version__",
 ]

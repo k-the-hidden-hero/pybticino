@@ -19,7 +19,7 @@ from .const import (
     HOMESDATA_ENDPOINT,
     HOMESTATUS_ENDPOINT,
     SETSTATE_ENDPOINT,
-    # Add other endpoints as needed
+    TURN_ENDPOINT,
     build_user_agent,
 )
 from .exceptions import ApiError, AuthError
@@ -479,4 +479,55 @@ class AsyncAccount:
         LOG.debug("Raw events data for home %s: %s", home_id, events_data)
         return events_data
 
-    # --- Add other account-level methods here ---
+    async def async_get_turn_servers(self) -> list[dict[str, Any]]:
+        """Fetch TURN/STUN server credentials for WebRTC.
+
+        Makes a POST request to the /turn endpoint with the user's bearer token.
+        The response contains ICE server configurations needed for WebRTC
+        peer connections to traverse NATs and firewalls.
+
+        Returns:
+            A list of ICE server dicts, each containing:
+            - urls: list of TURN/STUN URLs
+            - username: TURN username
+            - credential: TURN password
+            - credentialType: usually "password"
+
+        Raises:
+            AuthError: If authentication fails.
+            ApiError: If the API request fails.
+
+        """
+        try:
+            access_token = await self.auth_handler.get_access_token()
+        except AuthError:
+            LOG.exception("Authentication failed for TURN request")
+            raise
+
+        url = BASE_URL + TURN_ENDPOINT
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+        }
+        data = {"client_type": "user"}
+
+        session = await self.auth_handler._get_session()  # type: ignore[protected-access]
+
+        LOG.debug("Fetching TURN servers from %s", url)
+        try:
+            async with session.post(url, headers=headers, data=data, timeout=15) as response:
+                if response.status >= 400:
+                    error_text = await response.text()
+                    LOG.error("TURN request failed (%s): %s", response.status, error_text)
+                    raise ApiError(response.status, error_text)
+
+                result = await response.json()
+                ice_servers = result.get("iceServers", [])
+                LOG.debug("Got %d ICE servers", len(ice_servers))
+                return ice_servers
+
+        except TimeoutError:
+            LOG.exception("TURN request timed out")
+            raise ApiError(408, "TURN request timed out") from None
+        except aiohttp.ClientError as e:
+            LOG.exception("TURN request error")
+            raise ApiError(0, f"TURN request error: {e}") from e

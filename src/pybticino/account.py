@@ -191,7 +191,7 @@ class AsyncAccount:
                         error_message = (
                             error_content.get("error", {}).get("message") or error_content.get("error") or error_text
                         )
-                    except aiohttp.ContentTypeError, ValueError:
+                    except (aiohttp.ContentTypeError, ValueError):  # fmt: skip
                         error_message = error_text
                     raise ApiError(response.status, error_message)
 

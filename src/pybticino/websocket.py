@@ -242,21 +242,37 @@ class WebsocketClient:
     async def resubscribe(self) -> None:
         """Re-subscribe on the existing connection with a fresh token.
 
-        Refreshes the OAuth token and sends a new Subscribe message on the
+        Sends a new Subscribe message with a refreshed OAuth token on the
         current WebSocket connection. This keeps the session alive without
         disconnecting and reconnecting. Matches the official Android app behavior.
 
+        Note: This only sends the message — it does NOT wait for a response,
+        because the listener loop is already consuming recv(). The server's
+        response will arrive as a message in the listener and be ignored.
+
         Raises:
-            PyBticinoException: If no active connection or subscription fails.
+            PyBticinoException: If no active connection or send fails.
 
         """
         if not self._websocket or not self._is_running:
             err_msg = "Cannot resubscribe: no active WebSocket connection."
             raise PyBticinoException(err_msg)
 
-        _LOGGER.info("Re-subscribing with fresh token on existing connection...")
-        await self._subscribe()
-        _LOGGER.info("Re-subscribe successful, connection kept alive.")
+        try:
+            access_token = await self._auth_handler.get_access_token()
+            subscribe_message = {
+                "action": "Subscribe",
+                "access_token": access_token,
+                "app_type": "app_camera",
+                "platform": self._platform,
+                "version": self._app_version,
+            }
+            _LOGGER.info("Re-subscribing with fresh token on existing connection...")
+            await self._websocket.send(json.dumps(subscribe_message))
+            _LOGGER.info("Re-subscribe message sent successfully.")
+        except Exception as e:
+            err_msg = f"Re-subscribe failed: {e}"
+            raise PyBticinoException(err_msg) from e
 
     async def connect(self) -> None:
         """Establish the WebSocket connection, subscribe, and start listening.

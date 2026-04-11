@@ -40,6 +40,10 @@ dev = [
     "mypy",
     "types-requests",
 ]
+docs = [
+    "mkdocs-material",
+    "mkdocstrings[python]",
+]
 
 [project.urls]
 Homepage = "https://github.com/k-the-hidden-hero/pybticino"

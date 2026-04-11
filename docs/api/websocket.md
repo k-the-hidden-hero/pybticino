@@ -1,0 +1,3 @@
+# WebsocketClient
+
+::: pybticino.websocket.WebsocketClient

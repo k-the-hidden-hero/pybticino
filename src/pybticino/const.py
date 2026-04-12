@@ -22,7 +22,7 @@ def get_client_id() -> str:
     try:
         # Ensure correct padding if needed, though standard encoding usually handles it
         return base64.b64decode(_ENCODED_CLIENT_ID).decode("utf-8")
-    except binascii.Error, UnicodeDecodeError:
+    except (binascii.Error, UnicodeDecodeError):
         # Log error or raise a specific exception if decoding fails
         _LOGGER.exception("Error decoding client ID")
         return ""
@@ -32,7 +32,7 @@ def get_client_secret() -> str:
     """Return the Base64 decoded client secret."""
     try:
         return base64.b64decode(_ENCODED_CLIENT_SECRET).decode("utf-8")
-    except binascii.Error, UnicodeDecodeError:
+    except (binascii.Error, UnicodeDecodeError):
         _LOGGER.exception("Error decoding client secret")
         return ""
 

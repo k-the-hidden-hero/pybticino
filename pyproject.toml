@@ -67,7 +67,7 @@ norecursedirs = ["examples", "docs", ".tox", "test_env"]
 ignore_missing_imports = true
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py313"
 line-length = 120
 extend-exclude = ["examples"]
 

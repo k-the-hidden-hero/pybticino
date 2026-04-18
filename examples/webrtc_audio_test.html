@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BTicino WebRTC Audio Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+        h1 { color: #00bcd4; }
+        h2 { color: #80cbc4; margin-top: 2em; }
+
+        .card {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 16px 0;
+            border: 1px solid #0f3460;
+        }
+
+        video {
+            width: 100%;
+            max-width: 640px;
+            background: #000;
+            border-radius: 4px;
+        }
+
+        button {
+            background: #00bcd4;
+            color: #1a1a2e;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            margin: 4px;
+        }
+        button:hover { background: #26c6da; }
+        button:disabled {
+            background: #455a64;
+            color: #78909c;
+            cursor: not-allowed;
+        }
+        button.danger { background: #e53935; color: white; }
+        button.danger:hover { background: #ef5350; }
+
+        .log {
+            background: #0d1b2a;
+            border: 1px solid #1b2838;
+            border-radius: 4px;
+            padding: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: "Fira Code", "Consolas", monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .status.connected { background: #1b5e20; color: #a5d6a7; }
+        .status.disconnected { background: #b71c1c; color: #ef9a9a; }
+        .status.connecting { background: #e65100; color: #ffcc80; }
+
+        .audio-meter {
+            height: 20px;
+            background: #263238;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 8px 0;
+        }
+        .audio-meter-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00e676, #ffeb3b, #ff5722);
+            transition: width 100ms;
+            border-radius: 4px;
+        }
+
+        label { display: block; margin: 8px 0 4px; color: #b0bec5; }
+        input[type="text"] {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #37474f;
+            background: #263238;
+            color: #e0e0e0;
+            font-family: monospace;
+        }
+
+        .info {
+            background: #1a237e;
+            border-left: 4px solid #5c6bc0;
+            padding: 12px 16px;
+            margin: 12px 0;
+            border-radius: 0 4px 4px 0;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <h1>BTicino WebRTC Audio Test</h1>
+
+    <div class="info">
+        <strong>How this works:</strong> This page creates a WebRTC connection to a BTicino
+        intercom using the Netatmo signaling WebSocket. It generates a silent audio track
+        (0 Hz oscillator) to activate the device's microphone. Without real RTP audio
+        packets, the device sends silence.
+        <br><br>
+        <strong>Note:</strong> This is a standalone test page. For production use, see the
+        <a href="https://github.com/k-the-hidden-hero/bticino_intercom" style="color: #80cbc4">
+        bticino_intercom</a> Home Assistant integration.
+    </div>
+
+    <h2>Configuration</h2>
+    <div class="card">
+        <label for="token">OAuth Access Token:</label>
+        <input type="text" id="token" placeholder="Paste your Netatmo access token here">
+
+        <label for="deviceId">Device ID (bridge MAC):</label>
+        <input type="text" id="deviceId" placeholder="00:03:50:xx:xx:xx">
+
+        <label for="moduleId">Module ID (external unit, optional):</label>
+        <input type="text" id="moduleId" placeholder="Leave empty for default">
+    </div>
+
+    <h2>Controls</h2>
+    <div class="card">
+        <button id="btnConnect" onclick="startCall()">Connect</button>
+        <button id="btnDisconnect" onclick="endCall()" disabled class="danger">Disconnect</button>
+        <span id="statusBadge" class="status disconnected">Disconnected</span>
+    </div>
+
+    <h2>Video</h2>
+    <div class="card">
+        <video id="remoteVideo" autoplay playsinline muted></video>
+        <br>
+        <button onclick="document.getElementById('remoteVideo').muted = false">Unmute</button>
+        <button onclick="document.getElementById('remoteVideo').muted = true">Mute</button>
+    </div>
+
+    <h2>Audio Level</h2>
+    <div class="card">
+        <div>Remote audio level: <span id="audioLevelValue">--</span></div>
+        <div class="audio-meter">
+            <div class="audio-meter-fill" id="audioMeter" style="width: 0%"></div>
+        </div>
+        <div id="audioStatus" style="font-size: 13px; color: #78909c;">
+            Waiting for connection...
+        </div>
+    </div>
+
+    <h2>Log</h2>
+    <div class="log" id="logOutput"></div>
+
+    <script>
+    // =========================================================================
+    // BTicino WebRTC Audio Test
+    //
+    // Key discovery: The BTicino device requires REAL RTP audio packets to
+    // activate its microphone. Simply having sendrecv + fake SSRC in the SDP
+    // is not enough. The device checks for incoming RTP and only then enables
+    // its own audio transmission.
+    //
+    // Solution: Create a silent audio track using AudioContext + OscillatorNode
+    // at 0 Hz. This produces a real MediaStreamTrack that generates actual RTP
+    // silence packets when added to the PeerConnection. The device sees the
+    // incoming RTP and activates its microphone.
+    // =========================================================================
+
+    const SIGNALING_WS_URL = 'wss://app-ws.netatmo.net/appws/';
+
+    let signalingWs = null;
+    let peerConnection = null;
+    let audioContext = null;
+    let audioLevelInterval = null;
+
+    // Session state (populated from server ack)
+    let sessionId = null;
+    let tagId = null;
+    let correlationId = null;
+
+    function log(msg) {
+        const el = document.getElementById('logOutput');
+        const ts = new Date().toISOString().substring(11, 23);
+        el.textContent += `[${ts}] ${msg}\n`;
+        el.scrollTop = el.scrollHeight;
+        console.log(msg);
+    }
+
+    function setStatus(status) {
+        const badge = document.getElementById('statusBadge');
+        badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        badge.className = 'status ' + status;
+    }
+
+    // =========================================================================
+    // AUDIO TRACK CREATION
+    //
+    // This is the critical piece. We create a real audio track using the
+    // Web Audio API. The oscillator at 0 Hz produces silence, but Chrome/
+    // Firefox treat it as a real audio source and generate proper RTP packets.
+    //
+    // The effect on the SDP:
+    //   - Without this: m=audio ... a=recvonly (no SSRC)
+    //   - With this:    m=audio ... a=sendrecv + a=ssrc:XXXX
+    //
+    // The effect on RTP:
+    //   - Without this: No outgoing RTP packets on the audio channel
+    //   - With this:    Silence RTP packets flow, device activates mic
+    // =========================================================================
+    function createSilentAudioTrack() {
+        audioContext = new AudioContext();
+
+        // Create oscillator at 0 Hz (produces silence)
+        const oscillator = audioContext.createOscillator();
+        oscillator.frequency.value = 0;
+
+        // Connect to a MediaStream destination
+        const destination = audioContext.createMediaStreamDestination();
+        oscillator.connect(destination);
+        oscillator.start();
+
+        log('Created silent audio track (0 Hz oscillator)');
+        log('  AudioContext state: ' + audioContext.state);
+        log('  Track: ' + destination.stream.getAudioTracks()[0].label);
+
+        return destination.stream.getAudioTracks()[0];
+    }
+
+    // =========================================================================
+    // AUDIO LEVEL MONITORING
+    //
+    // Uses getStats() to read the audioLevel from inbound-rtp stats.
+    // - audioLevel ~0.00003 = silence (device mic NOT active)
+    // - audioLevel > 0.001  = real audio (device mic IS active)
+    // =========================================================================
+    function startAudioLevelMonitoring() {
+        audioLevelInterval = setInterval(async () => {
+            if (!peerConnection) return;
+
+            const stats = await peerConnection.getStats();
+            stats.forEach(report => {
+                if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                    const level = report.audioLevel || 0;
+                    const percent = Math.min(level * 1000, 100); // Scale for visibility
+
+                    document.getElementById('audioLevelValue').textContent =
+                        level.toFixed(5);
+                    document.getElementById('audioMeter').style.width =
+                        percent + '%';
+
+                    // Determine if we're getting real audio
+                    const statusEl = document.getElementById('audioStatus');
+                    if (level > 0.001) {
+                        statusEl.textContent = 'Device microphone ACTIVE (real audio)';
+                        statusEl.style.color = '#00e676';
+                    } else if (level > 0.00001) {
+                        statusEl.textContent = 'Device sending silence (mic not active)';
+                        statusEl.style.color = '#ffa726';
+                    } else {
+                        statusEl.textContent = 'No audio data';
+                        statusEl.style.color = '#78909c';
+                    }
+                }
+            });
+        }, 200);
+    }
+
+    // =========================================================================
+    // WEBRTC PEER CONNECTION SETUP
+    // =========================================================================
+    async function createPeerConnection() {
+        const config = {
+            bundlePolicy: 'balanced',
+            rtcpMuxPolicy: 'require',
+            // TURN servers would go here if available
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+
+        peerConnection = new RTCPeerConnection(config);
+        log('PeerConnection created');
+
+        // Add the silent audio track BEFORE creating the offer.
+        // This is what makes Chrome generate sendrecv + real SSRC naturally.
+        const silentTrack = createSilentAudioTrack();
+        peerConnection.addTrack(silentTrack);
+        log('Silent audio track added to PeerConnection');
+
+        // Add video transceiver (receive only)
+        peerConnection.addTransceiver('video', { direction: 'recvonly' });
+        log('Video transceiver added (recvonly)');
+
+        // Handle incoming tracks (remote video/audio from device)
+        peerConnection.ontrack = (event) => {
+            log('Remote track received: kind=' + event.track.kind);
+            if (event.track.kind === 'video') {
+                document.getElementById('remoteVideo').srcObject = event.streams[0];
+                log('Video stream attached to player');
+            }
+            if (event.track.kind === 'audio') {
+                // Audio comes through the same stream as video
+                const videoEl = document.getElementById('remoteVideo');
+                if (!videoEl.srcObject) {
+                    videoEl.srcObject = new MediaStream();
+                }
+                videoEl.srcObject.addTrack(event.track);
+                log('Audio track attached to player');
+            }
+        };
+
+        // Handle ICE candidates
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                // Filter: only send UDP candidates (matching the official app)
+                if (event.candidate.protocol === 'tcp') {
+                    log('Filtered TCP ICE candidate');
+                    return;
+                }
+                log('Sending ICE candidate: ' + event.candidate.candidate.substring(0, 60) + '...');
+                sendSignalingMessage({
+                    action: 'rtc',
+                    data: {
+                        type: 'candidate',
+                        ice_candidate: {
+                            sdp_m_line_index: event.candidate.sdpMLineIndex,
+                            candidate: event.candidate.candidate
+                        }
+                    },
+                    session_id: sessionId,
+                    tag_id: tagId,
+                    device_id: document.getElementById('deviceId').value,
+                    correlation_id: correlationId
+                });
+            }
+        };
+
+        // Connection state changes
+        peerConnection.onconnectionstatechange = () => {
+            log('Connection state: ' + peerConnection.connectionState);
+            if (peerConnection.connectionState === 'connected') {
+                setStatus('connected');
+                startAudioLevelMonitoring();
+            } else if (peerConnection.connectionState === 'failed' ||
+                       peerConnection.connectionState === 'disconnected') {
+                setStatus('disconnected');
+            }
+        };
+
+        peerConnection.oniceconnectionstatechange = () => {
+            log('ICE state: ' + peerConnection.iceConnectionState);
+        };
+
+        return peerConnection;
+    }
+
+    // =========================================================================
+    // SIGNALING WEBSOCKET
+    // =========================================================================
+    function connectSignaling(token) {
+        return new Promise((resolve, reject) => {
+            signalingWs = new WebSocket(SIGNALING_WS_URL);
+
+            signalingWs.onopen = () => {
+                log('Signaling WS connected');
+
+                // Subscribe with app_security app type
+                const subscribeMsg = {
+                    action: 'subscribe',
+                    access_token: token,
+                    app_type: 'app_security',
+                    version: '1.0',
+                    platform: 'android'
+                };
+                signalingWs.send(JSON.stringify(subscribeMsg));
+                log('Subscribe sent (app_security)');
+            };
+
+            signalingWs.onmessage = async (event) => {
+                const msg = JSON.parse(event.data);
+                log('WS recv: ' + JSON.stringify(msg).substring(0, 200));
+
+                // Subscribe response
+                if (msg.status === 'ok' && !sessionId) {
+                    log('Subscribed to signaling WS');
+                    resolve();
+                    return;
+                }
+
+                // Ack response (contains session_id and tag_id for the first ack)
+                if (msg.type === 'ack') {
+                    // IMPORTANT: Only update session state if the ack carries
+                    // real values. Subsequent acks (for ICE candidates) return
+                    // null and must NOT overwrite the session state.
+                    if (msg.session_id != null) {
+                        sessionId = msg.session_id;
+                        log('Session ID set: ' + sessionId);
+                    }
+                    if (msg.tag_id != null) {
+                        tagId = msg.tag_id;
+                        log('Tag ID set: ' + tagId);
+                    }
+                    return;
+                }
+
+                const data = msg.data || {};
+
+                // Answer SDP from device
+                if (data.type === 'answer') {
+                    const sdp = data.session_description?.sdp;
+                    if (sdp && peerConnection) {
+                        log('Received answer SDP (' + sdp.length + ' bytes)');
+
+                        // Log key SDP lines
+                        sdp.split('\r\n').forEach(line => {
+                            if (line.startsWith('m=') ||
+                                line.startsWith('a=sendrecv') ||
+                                line.startsWith('a=sendonly') ||
+                                line.startsWith('a=recvonly')) {
+                                log('  SDP: ' + line);
+                            }
+                        });
+
+                        await peerConnection.setRemoteDescription({
+                            type: 'answer',
+                            sdp: sdp
+                        });
+                        log('Remote description set');
+                    }
+                }
+
+                // Remote ICE candidate
+                if (data.type === 'candidate') {
+                    const ice = data.ice_candidate;
+                    if (ice && peerConnection) {
+                        log('Remote ICE: ' + (ice.candidate || '').substring(0, 60));
+                        await peerConnection.addIceCandidate({
+                            candidate: ice.candidate,
+                            sdpMLineIndex: ice.sdp_m_line_index
+                        });
+                    }
+                }
+
+                // Terminate
+                if (data.type === 'terminate') {
+                    const error = data.error;
+                    if (error) {
+                        log('TERMINATE with error: ' + error.message +
+                            ' (code ' + error.code + ')');
+                    } else {
+                        log('Session terminated by device');
+                    }
+                    endCall();
+                }
+            };
+
+            signalingWs.onerror = (err) => {
+                log('Signaling WS error');
+                reject(err);
+            };
+
+            signalingWs.onclose = (event) => {
+                log('Signaling WS closed: code=' + event.code);
+            };
+        });
+    }
+
+    function sendSignalingMessage(msg) {
+        if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+            signalingWs.send(JSON.stringify(msg));
+        }
+    }
+
+    // =========================================================================
+    // CALL MANAGEMENT
+    // =========================================================================
+    async function startCall() {
+        const token = document.getElementById('token').value.trim();
+        const deviceId = document.getElementById('deviceId').value.trim();
+        const moduleId = document.getElementById('moduleId').value.trim();
+
+        if (!token || !deviceId) {
+            alert('Please enter an access token and device ID');
+            return;
+        }
+
+        document.getElementById('btnConnect').disabled = true;
+        document.getElementById('btnDisconnect').disabled = false;
+        setStatus('connecting');
+
+        try {
+            // 1. Connect signaling WS and subscribe
+            await connectSignaling(token);
+
+            // 2. Create PeerConnection with silent audio track
+            await createPeerConnection();
+
+            // 3. Create offer
+            // Because we added an audio track, the offer will naturally have:
+            //   m=audio ... a=sendrecv + a=ssrc:XXXX
+            // No SDP manipulation needed!
+            const offer = await peerConnection.createOffer();
+            log('Local offer created');
+
+            // Log the audio direction and SSRC
+            offer.sdp.split('\r\n').forEach(line => {
+                if (line.startsWith('m=') ||
+                    line.startsWith('a=sendrecv') ||
+                    line.startsWith('a=sendonly') ||
+                    line.startsWith('a=recvonly') ||
+                    line.startsWith('a=ssrc:')) {
+                    log('  Offer SDP: ' + line);
+                }
+            });
+
+            await peerConnection.setLocalDescription(offer);
+            log('Local description set');
+
+            // 4. Generate correlation ID
+            correlationId = String(Date.now());
+
+            // 5. Send offer via signaling WS
+            const offerMsg = {
+                action: 'rtc',
+                data: {
+                    type: 'offer',
+                    session_description: {
+                        type: 'call',
+                        sdp: offer.sdp
+                    }
+                },
+                device_id: deviceId,
+                correlation_id: correlationId
+            };
+            if (moduleId) {
+                offerMsg.data.session_description.module_id = moduleId;
+            }
+            sendSignalingMessage(offerMsg);
+            log('Offer sent to device ' + deviceId);
+
+        } catch (err) {
+            log('ERROR: ' + err.message);
+            setStatus('disconnected');
+            document.getElementById('btnConnect').disabled = false;
+            document.getElementById('btnDisconnect').disabled = true;
+        }
+    }
+
+    function endCall() {
+        log('Ending call...');
+
+        // Send terminate if we have a session
+        if (sessionId && signalingWs) {
+            sendSignalingMessage({
+                action: 'rtc',
+                data: { type: 'terminate' },
+                session_id: sessionId,
+                tag_id: tagId,
+                device_id: document.getElementById('deviceId').value,
+                correlation_id: correlationId
+            });
+            log('Terminate sent');
+        }
+
+        // Clean up audio monitoring
+        if (audioLevelInterval) {
+            clearInterval(audioLevelInterval);
+            audioLevelInterval = null;
+        }
+
+        // Close PeerConnection
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+        }
+
+        // Close AudioContext
+        if (audioContext) {
+            audioContext.close();
+            audioContext = null;
+        }
+
+        // Close signaling WS
+        if (signalingWs) {
+            signalingWs.close();
+            signalingWs = null;
+        }
+
+        // Reset state
+        sessionId = null;
+        tagId = null;
+        correlationId = null;
+
+        // Reset UI
+        document.getElementById('remoteVideo').srcObject = null;
+        document.getElementById('btnConnect').disabled = false;
+        document.getElementById('btnDisconnect').disabled = true;
+        document.getElementById('audioLevelValue').textContent = '--';
+        document.getElementById('audioMeter').style.width = '0%';
+        document.getElementById('audioStatus').textContent = 'Waiting for connection...';
+        setStatus('disconnected');
+
+        log('Call ended, resources cleaned up');
+    }
+    </script>
+</body>
+</html>

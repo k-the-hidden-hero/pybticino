@@ -51,6 +51,10 @@ nav:
     - Models: api/models.md
     - Exceptions: api/exceptions.md
   - WebSocket Events: websocket-events.md
+  - WebRTC:
+    - Signaling Protocol: webrtc-signaling.md
+    - Audio Mechanism: webrtc-audio.md
+    - Reverse Engineering Notes: reverse-engineering-notes.md
   - Changelog: changelog.md
 
 markdown_extensions:

@@ -105,12 +105,14 @@ Events are delivered with `push_type` in format `{DEVICE_TYPE}-{EVENT_TYPE}`:
 
 ## Documentation
 
-Detailed protocol documentation from reverse engineering:
+Full documentation at **[k-the-hidden-hero.github.io/pybticino](https://k-the-hidden-hero.github.io/pybticino/)**
 
-- **[WebRTC Signaling Protocol](docs/webrtc-signaling.md)** — complete offer/answer/ICE flow, message formats, session state, two call modes (offer vs answer)
-- **[WebRTC Audio Mechanism](docs/webrtc-audio.md)** — how to activate the device microphone (requires real RTP audio packets)
-- **[WebSocket Events](docs/websocket-events.md)** — all push notification types and their JSON structures
-- **[Reverse Engineering Notes](docs/reverse-engineering-notes.md)** — findings from decompiling the official BTicino/Netatmo Android app
+Key guides from reverse engineering:
+
+- **[WebRTC Signaling Protocol](https://k-the-hidden-hero.github.io/pybticino/webrtc-signaling/)** — complete offer/answer/ICE flow, message formats, session state, two call modes
+- **[WebRTC Audio Mechanism](https://k-the-hidden-hero.github.io/pybticino/webrtc-audio/)** — how to activate the device microphone (requires real RTP audio packets)
+- **[WebSocket Events](https://k-the-hidden-hero.github.io/pybticino/websocket-events/)** — all push notification types and their JSON structures
+- **[Reverse Engineering Notes](https://k-the-hidden-hero.github.io/pybticino/reverse-engineering-notes/)** — findings from decompiling the official BTicino/Netatmo app
 
 ### Examples
 

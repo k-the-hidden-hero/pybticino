@@ -6,6 +6,14 @@ to exchange SDP offers/answers and ICE candidates with BTicino devices.
 This is separate from the push WebSocket (WebsocketClient) which receives
 event notifications. The signaling WS uses app_type "app_security" and
 handles the RTC call setup/teardown.
+
+Browser compatibility note:
+    The BTicino BNC1 firmware uses hardcoded Chrome-compatible RTP payload
+    type numbers (PT=111 for Opus, PT=109 for H264) regardless of what is
+    negotiated in the SDP answer. This makes WebRTC streaming Chrome-only.
+    Firefox uses different PT assignments and silently drops the mismatched
+    packets. The signaling layer works correctly with all browsers — the
+    incompatibility is at the RTP payload type level in the device firmware.
 """
 
 import asyncio

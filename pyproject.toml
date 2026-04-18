@@ -47,6 +47,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/k-the-hidden-hero/pybticino"
+Documentation = "https://k-the-hidden-hero.github.io/pybticino/"
 Repository = "https://github.com/k-the-hidden-hero/pybticino.git"
 Issues = "https://github.com/k-the-hidden-hero/pybticino/issues"
 Changelog = "https://github.com/k-the-hidden-hero/pybticino/blob/main/CHANGELOG.md"

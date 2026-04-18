@@ -275,6 +275,36 @@ class SignalingClient:
         _LOGGER.debug("Signaling send: %s", message)
         await self._websocket.send(json.dumps(message))
 
+    async def resubscribe(self) -> None:
+        """Re-subscribe on the existing connection with a fresh token.
+
+        Sends a new subscribe message with a refreshed OAuth token on the
+        current WebSocket connection, keeping the session alive without
+        disconnecting. Mirrors WebsocketClient.resubscribe().
+        """
+        if not self._websocket or not self._is_connected:
+            raise PyBticinoException("Cannot resubscribe: no active signaling connection")
+
+        access_token = await self._auth_handler.get_access_token()
+        subscribe_msg = {
+            "action": "subscribe",
+            "access_token": access_token,
+            "app_type": "app_security",
+            "version": "1.0",
+            "platform": "android",
+        }
+        _LOGGER.info("Re-subscribing signaling with fresh token")
+        await self._websocket.send(json.dumps(subscribe_msg))
+
+    async def ensure_connected(self) -> None:
+        """Ensure the signaling WS is connected, reconnecting if needed."""
+        if self._is_connected and self._websocket and self._websocket.state != State.CLOSED:
+            return
+        _LOGGER.info("Signaling not connected, reconnecting...")
+        if self._is_connected:
+            await self.disconnect()
+        await self.connect()
+
     async def send_offer(
         self,
         device_id: str,

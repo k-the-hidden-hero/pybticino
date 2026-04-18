@@ -243,14 +243,22 @@ class SignalingClient:
             _LOGGER.debug("Unhandled signaling message type: %s", msg_type)
 
     async def _handle_ack(self, message: dict[str, Any]) -> None:
-        """Handle an ack response (session_id + tag_id) from the server."""
+        """Handle an ack response (session_id + tag_id) from the server.
+
+        Only the offer ack contains session_id and tag_id. Subsequent acks
+        (for ICE candidates, etc.) have None for both fields. We must NOT
+        overwrite the session state with None, or terminate will fail with
+        'data/tag_id must be string'.
+        """
         session_id = message.get("session_id")
         tag_id = message.get("tag_id")
         _LOGGER.debug("Received ack: session_id=%s, tag_id=%s", session_id, tag_id)
 
-        # Store session state
-        self._session_id = session_id
-        self._tag_id = tag_id
+        # Only update session state if the ack carries real values
+        if session_id is not None:
+            self._session_id = session_id
+        if tag_id is not None:
+            self._tag_id = tag_id
 
         # Resolve any pending ack future
         # The ack doesn't contain correlation_id, so resolve the most recent pending

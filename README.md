@@ -103,6 +103,31 @@ Events are delivered with `push_type` in format `{DEVICE_TYPE}-{EVENT_TYPE}`:
 | `BNC1-connection` | Bridge connected |
 | `BNC1-disconnection` | Bridge disconnected |
 
+## Documentation
+
+Detailed protocol documentation from reverse engineering:
+
+- **[WebRTC Signaling Protocol](docs/webrtc-signaling.md)** — complete offer/answer/ICE flow, message formats, session state, two call modes (offer vs answer)
+- **[WebRTC Audio Mechanism](docs/webrtc-audio.md)** — how to activate the device microphone (requires real RTP audio packets)
+- **[WebSocket Events](docs/websocket-events.md)** — all push notification types and their JSON structures
+- **[Reverse Engineering Notes](docs/reverse-engineering-notes.md)** — findings from decompiling the official BTicino/Netatmo Android app
+
+### Examples
+
+Working example scripts in [`examples/`](examples/):
+
+| Script | Description |
+|--------|-------------|
+| [`webrtc_offer_mode.py`](examples/webrtc_offer_mode.py) | On-demand video: send offer → receive answer → ICE → connected |
+| [`webrtc_answer_mode.py`](examples/webrtc_answer_mode.py) | Answer incoming call: wait for doorbell → answer via signaling |
+| [`webrtc_audio_test.html`](examples/webrtc_audio_test.html) | Browser-based audio test with silence oscillator |
+| [`websocket_test.py`](examples/websocket_test.py) | Real-time push notification listener |
+
+## Related projects
+
+- [bticino_intercom](https://github.com/k-the-hidden-hero/bticino_intercom) — Home Assistant custom integration
+- [bticino_ha_extras](https://github.com/k-the-hidden-hero/bticino_ha_extras) — Blueprints, Lovelace cards, and companion resources
+
 ## Contributing
 
 ```bash

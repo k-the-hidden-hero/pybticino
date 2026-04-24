@@ -19,6 +19,7 @@ from .const import (
     HOMESDATA_ENDPOINT,
     HOMESTATUS_ENDPOINT,
     SETSTATE_ENDPOINT,
+    TURN_BASE_URL,
     TURN_ENDPOINT,
     build_user_agent,
 )
@@ -482,9 +483,8 @@ class AsyncAccount:
     async def async_get_turn_servers(self) -> list[dict[str, Any]]:
         """Fetch TURN/STUN server credentials for WebRTC.
 
-        Makes a POST request to the /turn endpoint with the user's bearer token.
-        The response contains ICE server configurations needed for WebRTC
-        peer connections to traverse NATs and firewalls.
+        Makes a POST request to the /turn endpoint using the same headers
+        and format as all other API calls (User-Agent, JSON content type).
 
         Returns:
             A list of ICE server dicts, each containing:
@@ -504,24 +504,32 @@ class AsyncAccount:
             LOG.exception("Authentication failed for TURN request")
             raise
 
-        url = BASE_URL + TURN_ENDPOINT
+        url = TURN_BASE_URL + TURN_ENDPOINT
+        user_agent = build_user_agent(
+            app_version=self._app_version,
+            build_number=self._build_number,
+            android_version=self._android_version,
+            device_info=self._device_info,
+        )
         headers = {
             "Authorization": f"Bearer {access_token}",
+            "User-Agent": user_agent,
+            "Content-Type": "application/json; charset=utf-8",
         }
-        data = {"client_type": "user"}
 
         session = await self.auth_handler._get_session()  # type: ignore[protected-access]
 
         LOG.debug("Fetching TURN servers from %s", url)
         try:
-            async with session.post(url, headers=headers, data=data, timeout=15) as response:
+            async with session.post(url, headers=headers, json={"client_type": "user"}, timeout=15) as response:
                 if response.status >= 400:
                     error_text = await response.text()
                     LOG.error("TURN request failed (%s): %s", response.status, error_text)
                     raise ApiError(response.status, error_text)
 
                 result = await response.json()
-                ice_servers = result.get("iceServers", [])
+                body = result.get("body", result)
+                ice_servers = body.get("iceServers", [])
                 LOG.debug("Got %d ICE servers", len(ice_servers))
                 return ice_servers
 

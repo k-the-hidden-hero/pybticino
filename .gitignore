@@ -146,3 +146,5 @@ pyatmo/
 call_incoming.xml
 uv.lock
 .ruff_cache
+.env
+.credentials

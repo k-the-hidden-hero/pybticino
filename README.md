@@ -33,8 +33,16 @@ Requires Python 3.13 or later.
 import asyncio
 from pybticino import AuthHandler, AsyncAccount
 
+async def on_token_change(tokens):
+    """Called when tokens are refreshed — persist them to avoid re-auth."""
+    print(f"New token expires at {tokens['expires_at']}")
+
 async def main():
-    auth = AuthHandler("your_email@example.com", "your_password")
+    auth = AuthHandler(
+        "your_email@example.com",
+        "your_password",
+        token_callback=on_token_change,  # optional: persist tokens
+    )
     account = AsyncAccount(auth)
 
     await account.async_update_topology()
@@ -47,6 +55,17 @@ async def main():
     await auth.close_session()
 
 asyncio.run(main())
+```
+
+To restore tokens from a previous session (skip initial auth):
+
+```python
+auth = AuthHandler("email", "password", token_callback=on_token_change)
+auth.set_tokens(
+    access_token=saved["access_token"],
+    refresh_token=saved["refresh_token"],
+    expires_at=saved["expires_at"],
+)
 ```
 
 ## WebSocket (real-time events)
@@ -62,13 +81,16 @@ async def main():
     auth = AuthHandler("your_email@example.com", "your_password")
     ws = WebsocketClient(auth, on_message)
 
+    # Option 1: run forever with auto-reconnect (recommended)
+    await ws.run_forever(reconnect_delay=30)
+
+    # Option 2: manual connect + listen
     await ws.connect()
-    # Listen for events (doorbell rings, connection changes, etc.)
     task = ws.get_listener_task()
     if task:
         await task
-
     await ws.disconnect()
+
     await auth.close_session()
 
 asyncio.run(main())
@@ -77,7 +99,8 @@ asyncio.run(main())
 ### Re-subscribe (keep connection alive)
 
 ```python
-# Refresh token on existing connection without disconnecting
+# Refresh token on existing connection without disconnecting.
+# Call this periodically (e.g., every hour) to prevent token expiry.
 await ws.resubscribe()
 ```
 
@@ -89,6 +112,7 @@ await ws.resubscribe()
 | `async_get_home_status(home_id)` | `/syncapi/v1/homestatus` | Get module status |
 | `async_set_module_state(home_id, module_id, state)` | `/syncapi/v1/setstate` | Control devices |
 | `async_get_events(home_id, size)` | `/api/getevents` | Get event history |
+| `async_get_turn_servers()` | `/turn` | Fetch TURN/STUN ICE server credentials for WebRTC |
 
 ## WebSocket event types
 

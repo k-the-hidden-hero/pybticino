@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os  # Import os module to access environment variables
 import sys  # Import sys for sys.exit
-from typing import Optional  # Import Optional
 
 # Import new async classes and exceptions
 from pybticino import (
@@ -68,8 +67,8 @@ async def main() -> None:
             logging.warning("No homes found for this account.")
             return
 
-        selected_home_obj: Optional[Home] = None
-        selected_home_id: Optional[str] = None
+        selected_home_obj: Home | None = None
+        selected_home_id: str | None = None
 
         if TARGET_HOME_ID:
             logging.info("Attempting to use specified Home ID: %s", TARGET_HOME_ID)

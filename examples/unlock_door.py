@@ -19,7 +19,6 @@ import asyncio
 import logging
 import os
 import sys
-from typing import Optional  # Import Optional
 
 # Import new async classes
 from pybticino import ApiError, AsyncAccount, AuthError, AuthHandler, Module
@@ -92,7 +91,7 @@ async def main() -> None:
 
         home_timezone = home_obj.raw_data.get("timezone")  # Access raw_data for now
         bridge_id = None
-        module_details: Optional[Module] = None  # Use Module model
+        module_details: Module | None = None  # Use Module model
 
         for module in home_obj.modules:
             if module.type == "BNC1":  # Assuming BNC1 is the bridge

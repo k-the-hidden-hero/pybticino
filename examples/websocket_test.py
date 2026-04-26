@@ -14,7 +14,7 @@ import logging
 import os
 import signal  # To handle graceful shutdown
 import time
-from typing import Any, Optional
+from typing import Any
 
 # Import new async classes
 from pybticino import (
@@ -139,10 +139,10 @@ shutdown_event = asyncio.Event()
 # Modified to be async and accept AsyncAccount
 async def handle_message(
     message: dict[str, Any],
-    account: Optional[AsyncAccount],  # Accept AsyncAccount or None (for simulation)
+    account: AsyncAccount | None,  # Accept AsyncAccount or None (for simulation)
     home_id: str,
     simulate: bool,
-    fake_event_data: Optional[dict[str, Any]] = None,
+    fake_event_data: dict[str, Any] | None = None,
 ) -> None:
     """Process received WebSocket messages."""
     logging.info("Received Message: %s", message)

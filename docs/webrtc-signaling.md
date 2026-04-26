@@ -408,7 +408,24 @@ The response contains ICE server configurations:
 
 ## pybticino API Reference
 
-The `SignalingClient` class provides the following methods for WebRTC signaling:
+### SignalingClient
+
+#### Constructor
+
+```python
+from pybticino import AuthHandler, SignalingClient
+
+signaling = SignalingClient(
+    auth_handler=auth,
+    on_answer=async_callback,     # (session_id: str, sdp: str) -> None
+    on_candidate=async_callback,  # (session_id: str, ice_candidate: dict) -> None
+    on_event=async_callback,      # (session_id: str, event_type: str, data: dict) -> None
+)
+```
+
+All callbacks are optional and async (`async def`). `on_event` receives signaling events like `terminate`, `rescind`, and error conditions.
+
+#### Methods
 
 | Method | Description |
 |--------|-------------|
@@ -419,14 +436,31 @@ The `SignalingClient` class provides the following methods for WebRTC signaling:
 | `send_candidate(candidate, sdp_m_line_index)` | Send an ICE candidate |
 | `send_terminate()` | Terminate the current session |
 | `set_session_from_push(session_id, tag_id, correlation_id, device_id)` | Set session state from a push WS event for answer mode |
+| `resubscribe()` | Re-subscribe on the existing connection with a refreshed OAuth token, without disconnecting |
+| `ensure_connected()` | Ensure the signaling WS is connected, reconnecting if needed |
 
-### Callbacks
+#### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `is_connected` | `bool` | `True` if the signaling WS is connected and subscribed |
+| `session_id` | `str \| None` | The current signaling session ID, or `None` if no session is active |
+
+### AsyncAccount (TURN servers)
 
 ```python
-SignalingClient(
-    auth_handler=auth,
-    on_answer=async_callback,     # (session_id: str, sdp: str) -> None
-    on_candidate=async_callback,  # (session_id: str, ice_candidate: dict) -> None
-    on_event=async_callback,      # (session_id: str, event_type: str, data: dict) -> None
-)
+turn_servers = await account.async_get_turn_servers()
+# Returns a list of ICE server dicts:
+# [{"urls": ["turn:turn.netatmo.net:443?transport=tcp"],
+#   "username": "...", "credential": "...", "credentialType": "password"},
+#  {"urls": ["stun:stun.netatmo.net:3478"]}]
 ```
+
+### Exceptions
+
+All signaling methods can raise:
+
+| Exception | When |
+|-----------|------|
+| `PyBticinoException` | Connection failed, message send failed, invalid session state |
+| `AuthError` | OAuth token refresh failed |

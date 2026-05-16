@@ -232,22 +232,24 @@ class AsyncAccount:
 
         Args:
             device_types (Optional[list[str]]): A list of device type strings to
-                filter the results. Defaults to `DEFAULT_DEVICE_TYPES`.
+                filter the results. When omitted, no filter is sent and the API
+                returns all module types for the user's homes — this matches the
+                natural API behaviour and ensures newer BTicino models (e.g. BNC3
+                on Classe 300X) are returned without requiring a hardcoded list
+                update here.
 
         Raises:
             AuthError: If obtaining an access token fails.
             ApiError: If the API call fails.
 
         """
-        if device_types is None:
-            device_types = DEFAULT_DEVICE_TYPES
-
-        payload = {
+        payload: dict[str, Any] = {
             "app_type": "app_camera",  # Keep this specific type for pybticino
             "app_version": self._app_version,
-            "device_types": device_types,
             "sync_measurements": False,
         }
+        if device_types is not None:
+            payload["device_types"] = device_types
 
         homes_data = await self._async_post_api_request(
             endpoint=HOMESDATA_ENDPOINT,
@@ -311,7 +313,8 @@ class AsyncAccount:
             home_id (str): The ID of the home for which to retrieve the status.
                            Must exist in `self.homes`.
             device_types (Optional[list[str]]): A list of device type strings to
-                filter the results. Defaults to `DEFAULT_DEVICE_TYPES`.
+                filter the results. When omitted, no filter is sent and the API
+                returns all module types for the home.
 
         Returns:
             dict[str, Any]: The raw JSON response from the API containing the
@@ -328,15 +331,13 @@ class AsyncAccount:
             # Or raise a specific error? For now, return empty dict.
             return {}
 
-        if device_types is None:
-            device_types = DEFAULT_DEVICE_TYPES
-
-        payload = {
+        payload: dict[str, Any] = {
             "app_type": "app_camera",  # Keep this specific type for pybticino
             "app_version": self._app_version,
             "home_id": home_id,
-            "device_types": device_types,
         }
+        if device_types is not None:
+            payload["device_types"] = device_types
 
         # Note: Using the specific HOMESTATUS_ENDPOINT from pybticino's const.py
         status_data = await self._async_post_api_request(

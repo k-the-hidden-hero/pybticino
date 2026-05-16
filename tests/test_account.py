@@ -107,6 +107,40 @@ async def test_update_topology_api_error(authenticated_account):
             await account.async_update_topology()
 
 
+async def test_update_topology_omits_device_types_by_default(authenticated_account):
+    """Regression test for issue #54: payload must NOT include device_types by default.
+
+    Sending a hardcoded device_types filter caused newer BTicino bridges (e.g.
+    BNC3 on Classe 300X) to be filtered out, leaving the integration unable to
+    discover any modules. Omitting the field returns all module types.
+    """
+    account = authenticated_account
+
+    with aioresponses() as m:
+        m.post(HOMESDATA_URL, payload=build_homesdata_response())
+        await account.async_update_topology()
+
+        requests = [r for k, v in m.requests.items() if k[0] == "POST" for r in v]
+        assert len(requests) == 1
+        sent = requests[0].kwargs["json"]
+        assert "device_types" not in sent
+        assert sent["app_type"] == "app_camera"
+        assert sent["sync_measurements"] is False
+
+
+async def test_update_topology_includes_device_types_when_passed(authenticated_account):
+    """Explicit device_types must still be forwarded to the API."""
+    account = authenticated_account
+
+    with aioresponses() as m:
+        m.post(HOMESDATA_URL, payload=build_homesdata_response())
+        await account.async_update_topology(device_types=["BNC1", "BNC3"])
+
+        requests = [r for k, v in m.requests.items() if k[0] == "POST" for r in v]
+        sent = requests[0].kwargs["json"]
+        assert sent["device_types"] == ["BNC1", "BNC3"]
+
+
 async def test_update_topology_clears_previous_homes(authenticated_account):
     """Test that topology update replaces previous home data."""
     account = authenticated_account
@@ -143,6 +177,41 @@ async def test_get_home_status(authenticated_account):
     assert "body" in status
     modules = status["body"]["home"]["modules"]
     assert len(modules) == 3
+
+
+async def test_get_home_status_omits_device_types_by_default(authenticated_account):
+    """Regression test for issue #54: homestatus payload must NOT filter by default."""
+    account = authenticated_account
+
+    with aioresponses() as m:
+        m.post(HOMESDATA_URL, payload=build_homesdata_response())
+        await account.async_update_topology()
+
+    with aioresponses() as m:
+        m.post(HOMESTATUS_URL, payload=build_homestatus_response())
+        await account.async_get_home_status(MOCK_HOME_ID)
+
+        requests = [r for k, v in m.requests.items() if k[0] == "POST" for r in v]
+        sent = requests[0].kwargs["json"]
+        assert "device_types" not in sent
+        assert sent["home_id"] == MOCK_HOME_ID
+
+
+async def test_get_home_status_includes_device_types_when_passed(authenticated_account):
+    """Explicit device_types must still be forwarded on homestatus."""
+    account = authenticated_account
+
+    with aioresponses() as m:
+        m.post(HOMESDATA_URL, payload=build_homesdata_response())
+        await account.async_update_topology()
+
+    with aioresponses() as m:
+        m.post(HOMESTATUS_URL, payload=build_homestatus_response())
+        await account.async_get_home_status(MOCK_HOME_ID, device_types=["BNC3"])
+
+        requests = [r for k, v in m.requests.items() if k[0] == "POST" for r in v]
+        sent = requests[0].kwargs["json"]
+        assert sent["device_types"] == ["BNC3"]
 
 
 async def test_get_home_status_unknown_home(authenticated_account):

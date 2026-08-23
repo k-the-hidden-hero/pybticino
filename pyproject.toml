@@ -33,6 +33,8 @@ test = [
     "pytest-cov",
     "pytest-mock",
     "aioresponses",
+    # aioresponses 0.7.9 is incompatible with aiohttp 3.14's ClientResponse API.
+    "aiohttp<3.14",
 ]
 dev = [
     "ruff",

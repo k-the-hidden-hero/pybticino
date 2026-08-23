@@ -163,7 +163,7 @@ class AsyncAccount:
         LOG.debug("Making ASYNC POST request to %s", url)
         LOG.debug(
             "Headers: %s",
-            {k: (v[:30] + "..." if k == "Authorization" else v) for k, v in headers.items()},
+            {k: ("<redacted>" if k.lower() == "authorization" else v) for k, v in headers.items()},
         )
         LOG.debug("Params: %s", params)
         LOG.debug("JSON Data: %s", json_data)

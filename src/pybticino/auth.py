@@ -264,7 +264,11 @@ class AuthHandler:
                         raise ApiError(response.status, error_text) from parse_err
 
                 token_data = await response.json()
-                _LOGGER.debug("Token response received: %s", token_data)
+                _LOGGER.debug(
+                    "Token response received (expires_in=%s, token_type=%s)",
+                    token_data.get("expires_in"),
+                    token_data.get("token_type"),
+                )
 
                 if "access_token" not in token_data or "refresh_token" not in token_data:
                     err_msg = "Authentication failed: Missing tokens in response"
@@ -390,7 +394,11 @@ class AuthHandler:
                             raise AuthError(err_msg) from parse_err
 
                 token_data = await response.json()
-                _LOGGER.debug("Token refresh response received: %s", token_data)
+                _LOGGER.debug(
+                    "Token refresh response received (expires_in=%s, token_type=%s)",
+                    token_data.get("expires_in"),
+                    token_data.get("token_type"),
+                )
 
                 if "access_token" not in token_data:
                     self._access_token = None

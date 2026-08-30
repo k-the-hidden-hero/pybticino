@@ -79,6 +79,8 @@ class WebsocketClient:
         self._websocket: websockets.ClientConnection | None = None  # Updated type hint
         self._listener_task: asyncio.Task | None = None
         self._is_running = False
+        self._run_forever_active = False
+        self._run_forever_stop = asyncio.Event()
         self._connection_lock = asyncio.Lock()  # Lock to prevent concurrent connect/disconnect
 
     def get_listener_task(self) -> asyncio.Task | None:
@@ -362,6 +364,14 @@ class WebsocketClient:
         Cancels the listener task and closes the WebSocket connection.
         Uses a lock to prevent concurrent disconnect operations.
         """
+        await self._disconnect(stop_run_forever=True)
+
+    async def _disconnect(self, *, stop_run_forever: bool) -> None:
+        """Close the current connection, optionally stopping ``run_forever``."""
+        if stop_run_forever:
+            self._run_forever_active = False
+            self._run_forever_stop.set()
+
         async with self._connection_lock:
             if not self._is_running and not self._websocket:
                 _LOGGER.info("WebSocket client already disconnected.")
@@ -418,9 +428,15 @@ class WebsocketClient:
                                    to reconnect after a disconnection. Defaults to 30.
 
         """
-        _LOGGER.info("Starting WebSocket client run_forever loop...")
+        if self._run_forever_active:
+            err_msg = "WebSocket client run_forever loop is already active."
+            raise PyBticinoException(err_msg)
 
-        while self._is_running:  # Check flag BEFORE each loop iteration
+        _LOGGER.info("Starting WebSocket client run_forever loop...")
+        self._run_forever_active = True
+        self._run_forever_stop.clear()
+
+        while self._run_forever_active:
             listener_task_completed_cleanly = False
             try:
                 # Attempt to connect (includes subscription and starting listener)
@@ -441,9 +457,12 @@ class WebsocketClient:
 
             except asyncio.CancelledError:
                 _LOGGER.info("run_forever loop cancelled.")
-                # Ensure disconnect is called if cancelled mid-connect/listen
-                await self.disconnect()  # Ensure cleanup
-                break  # Exit the while loop cleanly
+                if not self._run_forever_active:
+                    break
+                self._run_forever_active = False
+                self._run_forever_stop.set()
+                await self._disconnect(stop_run_forever=False)
+                raise
             except (PyBticinoException, websockets.exceptions.WebSocketException) as e:
                 # Specific connection/protocol errors during connect or listen
                 _LOGGER.warning(
@@ -461,29 +480,35 @@ class WebsocketClient:
             # --- Reconnection Logic ---
             # If the loop didn't break (due to cancellation) and we are still running,
             # attempt reconnect after delay.
-            if self._is_running:
+            if self._run_forever_active:
                 if listener_task_completed_cleanly:
                     _LOGGER.info("Listener finished cleanly, attempting reconnect.")
                 # else: Error occurred, already logged above.
 
                 _LOGGER.info("Attempting WebSocket reconnection...")
                 # Ensure clean state before retry, disconnect handles listener cancellation
-                await self.disconnect()
+                await self._disconnect(stop_run_forever=False)
                 _LOGGER.info(
                     "Waiting %d seconds before reconnect attempt...",
                     reconnect_delay,
                 )
                 try:
-                    await asyncio.sleep(reconnect_delay)
+                    await asyncio.wait_for(
+                        self._run_forever_stop.wait(),
+                        timeout=reconnect_delay,
+                    )
+                except TimeoutError:
+                    pass
                 except asyncio.CancelledError:
                     _LOGGER.info(
                         "Reconnect delay interrupted by cancellation. Exiting loop.",
                     )
-                    await self.disconnect()  # Ensure cleanup on cancel during sleep
-                    break  # Exit the while loop
+                    self._run_forever_active = False
+                    self._run_forever_stop.set()
+                    await self._disconnect(stop_run_forever=False)
+                    raise
             else:
-                _LOGGER.info("run_forever loop exiting because _is_running is false.")
-                # Ensure disconnect is called if loop exits due to _is_running flag
-                await self.disconnect()
+                _LOGGER.info("run_forever loop exiting because it was stopped.")
 
+        self._run_forever_active = False
         _LOGGER.info("WebSocket client run_forever loop finished.")

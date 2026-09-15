@@ -33,6 +33,10 @@ test = [
     "pytest-cov",
     "pytest-mock",
     "aioresponses",
+    # aioresponses 0.7.9 (its latest) builds ClientResponse without the
+    # stream_writer argument aiohttp 3.14 made required, which fails every test
+    # that mocks a request. Pinned until aioresponses supports 3.14.
+    "aiohttp<3.14",
 ]
 dev = [
     "ruff",

@@ -33,6 +33,10 @@ test = [
     "pytest-cov",
     "pytest-mock",
     "aioresponses",
+    # aioresponses 0.7.9 (its latest) builds ClientResponse without the
+    # stream_writer argument aiohttp 3.14 made required, which fails every test
+    # that mocks a request. Pinned until aioresponses supports 3.14.
+    "aiohttp<3.14",
 ]
 dev = [
     "ruff",
@@ -70,7 +74,9 @@ ignore_missing_imports = true
 [tool.ruff]
 target-version = "py313"
 line-length = 120
-extend-exclude = ["examples"]
+# ruff >=0.16 formats fenced code blocks inside Markdown too; the prose files
+# here are documentation, not sources, so they stay out of check and format.
+extend-exclude = ["examples", "docs", "README.md"]
 
 [tool.ruff.lint]
 select = [

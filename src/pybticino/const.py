@@ -68,6 +68,8 @@ def build_user_agent(
 HOMESDATA_ENDPOINT = "/api/homesdata"
 HOMESTATUS_ENDPOINT = "/syncapi/v1/homestatus"
 SETSTATE_ENDPOINT = "/syncapi/v1/setstate"
+GETCONFIGS_ENDPOINT = "/syncapi/v1/getconfigs"
+SETCONFIGS_ENDPOINT = "/syncapi/v1/setconfigs"
 GETEVENTS_ENDPOINT = "/api/getevents"  # Note: Log shows /%2Fapi%2Fgetevents, using decoded path
 ADD_PUSH_CONTEXT_ENDPOINT = "/api/addpushcontext"
 MODIFY_USER_ENDPOINT = "/api/modifyuser"

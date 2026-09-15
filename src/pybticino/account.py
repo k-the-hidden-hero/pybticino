@@ -441,6 +441,7 @@ class AsyncAccount:
         )
         LOG.debug("Set state result: %s", result)
         return result
+
     async def async_get_module_configs(
         self,
         home_id: str,
@@ -556,11 +557,7 @@ class AsyncAccount:
             module_ids=[module_id],
         )
 
-        modules = (
-            result.get("body", {})
-            .get("home", {})
-            .get("modules", [])
-        )
+        modules = result.get("body", {}).get("home", {}).get("modules", [])
 
         for module in modules:
             if module.get("id") == module_id:
@@ -597,7 +594,7 @@ class AsyncAccount:
                 "do_not_disturb": dnd_config,
             },
         )
-    
+
     async def async_get_professional_studio_config(
         self,
         home_id: str,
@@ -609,11 +606,7 @@ class AsyncAccount:
             module_ids=[module_id],
         )
 
-        modules = (
-            result.get("body", {})
-            .get("home", {})
-            .get("modules", [])
-        )
+        modules = result.get("body", {}).get("home", {}).get("modules", [])
 
         for module in modules:
             if module.get("id") == module_id:
@@ -640,7 +633,7 @@ class AsyncAccount:
                 "professional_studio": professional_studio_config,
             },
         )
-    
+
     async def async_get_events(self, home_id: str, size: int = 30) -> dict[str, Any]:
         """Retrieve the event history for a specific home.
 

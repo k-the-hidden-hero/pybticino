@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import aiohttp
@@ -15,9 +16,11 @@ from .const import (
     DEFAULT_APP_VERSION,
     DEFAULT_BUILD_NUMBER,
     DEFAULT_DEVICE_INFO,
+    GETCONFIGS_ENDPOINT,
     GETEVENTS_ENDPOINT,
     HOMESDATA_ENDPOINT,
     HOMESTATUS_ENDPOINT,
+    SETCONFIGS_ENDPOINT,
     SETSTATE_ENDPOINT,
     TURN_BASE_URL,
     TURN_ENDPOINT,
@@ -37,6 +40,7 @@ DEFAULT_DEVICE_TYPES: list[str] = [
     "BPAC",
     "BPVC",
     "BNC1",
+    "BNC3",
     "BDIY",
     "BNHY",
     "NACamera",
@@ -437,7 +441,206 @@ class AsyncAccount:
         )
         LOG.debug("Set state result: %s", result)
         return result
+    async def async_get_module_configs(
+        self,
+        home_id: str,
+        module_ids: list[str],
+    ) -> dict[str, Any]:
+        """Retrieve configuration for one or more modules.
 
+        Calls the `/syncapi/v1/getconfigs` endpoint. This endpoint returns
+        module configuration data that is not included in `/homestatus` or
+        `/homesdata`, for example do-not-disturb settings on BNC3 modules.
+
+        Args:
+            home_id: The ID of the home containing the modules.
+            module_ids: List of module IDs for which configuration should be read.
+
+        Returns:
+            Raw JSON response from the API.
+
+        Raises:
+            ValueError: If the provided `home_id` is not found in `self.homes`.
+            AuthError: If obtaining an access token fails.
+            ApiError: If the API call fails.
+        """
+        if home_id not in self.homes:
+            LOG.error("Home ID %s not found for getting module configs.", home_id)
+            err_msg = f"Home ID {home_id} not found."
+            raise ValueError(err_msg)
+
+        payload = {
+            "module_ids": module_ids,
+            "home_id": home_id,
+            "app_identifier": "app_camera",
+        }
+
+        result = await self._async_post_api_request(
+            endpoint=GETCONFIGS_ENDPOINT,
+            json_data=payload,
+        )
+        LOG.debug("Module configs result for home %s: %s", home_id, result)
+        return result
+
+    async def async_set_module_configs(
+        self,
+        home_id: str,
+        module_id: str,
+        module_type: str,
+        configs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Set configuration for a module.
+
+        Calls the `/syncapi/v1/setconfigs` endpoint. This endpoint is used for
+        module configuration data, such as do-not-disturb settings, rather than
+        regular state changes handled by `/setstate`.
+
+        Args:
+            home_id: The ID of the home containing the module.
+            module_id: The ID of the module to configure.
+            module_type: The BTicino module type, for example `BNC3`.
+            configs: Configuration keys to set on the module.
+
+        Returns:
+            Raw JSON response from the API.
+
+        Raises:
+            ValueError: If the provided `home_id` is not found in `self.homes`.
+            AuthError: If obtaining an access token fails.
+            ApiError: If the API call fails.
+        """
+        if home_id not in self.homes:
+            LOG.error("Home ID %s not found for setting module configs.", home_id)
+            err_msg = f"Home ID {home_id} not found."
+            raise ValueError(err_msg)
+
+        module_payload = {
+            "id": module_id,
+            "type": module_type,
+            "last_configs_update": int(time.time() * 1000),
+        }
+        module_payload.update(configs)
+
+        payload = {
+            "app_identifier": "app_camera",
+            "home": {
+                "id": home_id,
+                "modules": [module_payload],
+            },
+        }
+
+        result = await self._async_post_api_request(
+            endpoint=SETCONFIGS_ENDPOINT,
+            json_data=payload,
+        )
+        LOG.debug("Set module configs result: %s", result)
+        return result
+
+    async def async_get_do_not_disturb_config(
+        self,
+        home_id: str,
+        module_id: str,
+    ) -> dict[str, Any] | None:
+        """Retrieve the do-not-disturb configuration for a module.
+
+        Args:
+            home_id: The ID of the home containing the module.
+            module_id: The ID of the module to read.
+
+        Returns:
+            The `do_not_disturb` configuration dictionary, or `None` if it is
+            not present in the response.
+        """
+        result = await self.async_get_module_configs(
+            home_id=home_id,
+            module_ids=[module_id],
+        )
+
+        modules = (
+            result.get("body", {})
+            .get("home", {})
+            .get("modules", [])
+        )
+
+        for module in modules:
+            if module.get("id") == module_id:
+                dnd_config = module.get("do_not_disturb")
+                if isinstance(dnd_config, dict):
+                    return dnd_config
+                return None
+
+        return None
+
+    async def async_set_do_not_disturb_config(
+        self,
+        home_id: str,
+        module_id: str,
+        dnd_config: dict[str, Any],
+        module_type: str = "BNC3",
+    ) -> dict[str, Any]:
+        """Set the do-not-disturb configuration for a module.
+
+        Args:
+            home_id: The ID of the home containing the module.
+            module_id: The ID of the module to configure.
+            dnd_config: The do-not-disturb config to write.
+            module_type: The BTicino module type. Defaults to `BNC3`.
+
+        Returns:
+            Raw JSON response from the API.
+        """
+        return await self.async_set_module_configs(
+            home_id=home_id,
+            module_id=module_id,
+            module_type=module_type,
+            configs={
+                "do_not_disturb": dnd_config,
+            },
+        )
+    
+    async def async_get_professional_studio_config(
+        self,
+        home_id: str,
+        module_id: str,
+    ) -> dict[str, Any] | None:
+        """Retrieve the professional-studio configuration for a module."""
+        result = await self.async_get_module_configs(
+            home_id=home_id,
+            module_ids=[module_id],
+        )
+
+        modules = (
+            result.get("body", {})
+            .get("home", {})
+            .get("modules", [])
+        )
+
+        for module in modules:
+            if module.get("id") == module_id:
+                professional_studio_config = module.get("professional_studio")
+                if isinstance(professional_studio_config, dict):
+                    return professional_studio_config
+                return None
+
+        return None
+
+    async def async_set_professional_studio_config(
+        self,
+        home_id: str,
+        module_id: str,
+        professional_studio_config: dict[str, Any],
+        module_type: str = "BNC3",
+    ) -> dict[str, Any]:
+        """Set the professional-studio configuration for a module."""
+        return await self.async_set_module_configs(
+            home_id=home_id,
+            module_id=module_id,
+            module_type=module_type,
+            configs={
+                "professional_studio": professional_studio_config,
+            },
+        )
+    
     async def async_get_events(self, home_id: str, size: int = 30) -> dict[str, Any]:
         """Retrieve the event history for a specific home.
 

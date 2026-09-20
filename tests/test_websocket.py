@@ -233,3 +233,57 @@ async def test_listener_handles_invalid_json():
     assert received[0] == {"valid": True}
 
     await client.disconnect()
+
+
+async def test_run_forever_connects_and_reconnects():
+    """run_forever must start from idle and reconnect after a clean listener exit."""
+    handler = AuthHandler(MOCK_USERNAME, MOCK_PASSWORD)
+
+    async def cb(msg):
+        pass
+
+    client = WebsocketClient(handler, cb)
+    connected_twice = asyncio.Event()
+    attempts = 0
+
+    async def fake_connect():
+        nonlocal attempts
+        attempts += 1
+        client._is_running = True
+        if attempts == 1:
+            client._listener_task = asyncio.create_task(asyncio.sleep(0))
+        else:
+            client._listener_task = asyncio.create_task(asyncio.Event().wait())
+            connected_twice.set()
+
+    with patch.object(client, "connect", side_effect=fake_connect) as connect_mock:
+        run_task = asyncio.create_task(client.run_forever(reconnect_delay=0))
+        await asyncio.wait_for(connected_twice.wait(), timeout=2)
+        await client.disconnect()
+        await asyncio.wait_for(run_task, timeout=2)
+
+    assert connect_mock.await_count == 2
+    assert client._run_forever_active is False
+
+
+async def test_disconnect_interrupts_run_forever_reconnect_delay():
+    """disconnect must stop a pending reconnect without waiting for its delay."""
+    handler = AuthHandler(MOCK_USERNAME, MOCK_PASSWORD)
+
+    async def cb(msg):
+        pass
+
+    client = WebsocketClient(handler, cb)
+    attempted = asyncio.Event()
+
+    async def failing_connect():
+        attempted.set()
+        raise PyBticinoException("temporary failure")
+
+    with patch.object(client, "connect", side_effect=failing_connect):
+        run_task = asyncio.create_task(client.run_forever(reconnect_delay=3600))
+        await asyncio.wait_for(attempted.wait(), timeout=2)
+        await client.disconnect()
+        await asyncio.wait_for(run_task, timeout=2)
+
+    assert client._run_forever_active is False

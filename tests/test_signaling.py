@@ -284,3 +284,158 @@ class TestMessageHandling:
         assert subscribe["app_type"] == "app_security"
         assert subscribe["version"] == "1.0"
         assert subscribe["access_token"] == MOCK_ACCESS_TOKEN
+
+
+def _capture_sends(client):
+    """Replace _send with a recorder and mark the client connected."""
+    sent = []
+
+    async def mock_send(msg):
+        sent.append(msg)
+
+    client._send = mock_send
+    client._is_connected = True
+    client._websocket = MagicMock()
+    return sent
+
+
+async def _start_offer(client, device_id=MOCK_BRIDGE_ID, module_id="ext-unit-123"):
+    """Start send_offer in a task and wait until its message is on the wire."""
+    task = asyncio.create_task(client.send_offer(device_id=device_id, sdp="v=0\r\nfake", module_id=module_id))
+    await asyncio.sleep(0.01)
+    return task
+
+
+class TestOfferAckCorrelation:
+    """An offer must complete on its own ack, not on whatever ack comes first (#105 downstream)."""
+
+    async def test_subscribe_ack_does_not_complete_a_pending_offer(self, signaling_client):
+        """A resubscribe ack carries no session; it must not be taken for the offer's ack."""
+        _capture_sends(signaling_client)
+        task = await _start_offer(signaling_client)
+
+        await signaling_client._handle_message({"type": "ack", "status": "ok", "correlation_id": 0})
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        await signaling_client._handle_message(
+            {"type": "ack", "status": "ok", "session_id": "real-sess", "tag_id": "real-tag"}
+        )
+        assert await task == "real-sess"
+
+    async def test_ack_with_matching_correlation_id_completes_that_offer(self, signaling_client):
+        """With two offers pending, an ack naming a correlation id completes that offer only."""
+        sent = _capture_sends(signaling_client)
+        first = await _start_offer(signaling_client, module_id="unit-1")
+        second = await _start_offer(signaling_client, module_id="unit-2")
+        second_corr = sent[1]["correlation_id"]
+
+        await signaling_client._handle_message(
+            {"type": "ack", "status": "ok", "session_id": "sess-2", "tag_id": "tag-2", "correlation_id": second_corr}
+        )
+        assert await second == "sess-2"
+        assert not first.done()
+
+        await signaling_client._handle_message(
+            {"type": "ack", "status": "ok", "session_id": "sess-1", "tag_id": "tag-1"}
+        )
+        assert await first == "sess-1"
+
+
+class TestPerSessionState:
+    """Each session keeps its own tag, correlation id and device (pybticino#28)."""
+
+    async def _open(self, client, session_id, tag_id, device_id=MOCK_BRIDGE_ID):
+        sent = _capture_sends(client) if not hasattr(client, "_test_sent") else client._test_sent
+        client._test_sent = sent
+        task = await _start_offer(client, device_id=device_id)
+        corr = sent[-1]["correlation_id"]
+        await client._handle_message({"type": "ack", "status": "ok", "session_id": session_id, "tag_id": tag_id})
+        await task
+        return corr
+
+    async def test_terminate_targets_the_named_session_after_a_newer_offer(self, signaling_client):
+        """Terminating an older session uses its own fields and leaves the newer one intact."""
+        old_corr = await self._open(signaling_client, "old-sess", "old-tag")
+        new_corr = await self._open(signaling_client, "new-sess", "new-tag")
+        sent = signaling_client._test_sent
+
+        await signaling_client.send_terminate("old-sess")
+
+        msg = sent[-1]
+        assert msg["data"]["type"] == "terminate"
+        assert msg["session_id"] == "old-sess"
+        assert msg["tag_id"] == "old-tag"
+        assert msg["correlation_id"] == old_corr
+        assert signaling_client.session_id == "new-sess"
+
+        await signaling_client.send_candidate("candidate:1 1 udp 1 1.2.3.4 5 typ host", 0)
+        assert sent[-1]["session_id"] == "new-sess"
+        assert sent[-1]["tag_id"] == "new-tag"
+        assert sent[-1]["correlation_id"] == new_corr
+
+    async def test_terminate_of_an_unknown_session_sends_nothing(self, signaling_client):
+        """A session the client never saw has no tag to terminate with."""
+        await self._open(signaling_client, "live-sess", "live-tag")
+        sent = signaling_client._test_sent
+        before = len(sent)
+
+        await signaling_client.send_terminate("never-seen")
+
+        assert len(sent) == before
+        assert signaling_client.session_id == "live-sess"
+
+    async def test_terminate_without_argument_keeps_closing_the_current_session(self, signaling_client):
+        """The old call shape still terminates the most recent session."""
+        await self._open(signaling_client, "only-sess", "only-tag")
+
+        await signaling_client.send_terminate()
+
+        assert signaling_client._test_sent[-1]["session_id"] == "only-sess"
+        assert signaling_client.session_id is None
+
+    async def test_candidate_for_a_named_session_uses_its_fields(self, signaling_client):
+        """send_candidate(session_id=...) addresses that session, not the latest."""
+        old_corr = await self._open(signaling_client, "old-sess", "old-tag")
+        await self._open(signaling_client, "new-sess", "new-tag")
+
+        await signaling_client.send_candidate("candidate:x", 1, session_id="old-sess")
+
+        msg = signaling_client._test_sent[-1]
+        assert msg["session_id"] == "old-sess"
+        assert msg["tag_id"] == "old-tag"
+        assert msg["correlation_id"] == old_corr
+
+    async def test_push_session_can_be_answered_by_id(self, signaling_client):
+        """A session set from a push is addressable even after another offer."""
+        signaling_client.set_session_from_push(
+            session_id="push-sess", tag_id="push-tag", correlation_id="push-corr", device_id=MOCK_BRIDGE_ID
+        )
+        await self._open(signaling_client, "offer-sess", "offer-tag")
+
+        await signaling_client.send_answer("v=0\r\nanswer", session_id="push-sess")
+
+        msg = signaling_client._test_sent[-1]
+        assert msg["data"]["type"] == "answer"
+        assert msg["session_id"] == "push-sess"
+        assert msg["tag_id"] == "push-tag"
+        assert msg["correlation_id"] == "push-corr"
+
+
+class TestCorrelationIds:
+    """Each offer needs its own correlation id: acks are matched on it."""
+
+    async def test_offers_sent_from_one_task_get_different_ids(self, signaling_client):
+        """id(current_task()) is the same for every offer a task sends."""
+        sent = _capture_sends(signaling_client)
+
+        async def ack_soon(session_id):
+            await asyncio.sleep(0.01)
+            await signaling_client._handle_message({"type": "ack", "status": "ok", "session_id": session_id})
+
+        for session_id in ("s1", "s2"):
+            acker = asyncio.create_task(ack_soon(session_id))
+            assert await signaling_client.send_offer(device_id=MOCK_BRIDGE_ID, sdp="v=0") == session_id
+            await acker
+
+        assert sent[0]["correlation_id"] != sent[1]["correlation_id"]

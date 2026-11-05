@@ -192,6 +192,11 @@ The server responds to an offer with an acknowledgement containing the session i
 !!! warning "Ack handling"
     Only the offer ack contains `session_id` and `tag_id`. Subsequent acks (for ICE candidates, terminate, etc.) return `null` for both fields. The client **must not** overwrite the session state with null values, or the terminate message will fail with `data/tag_id must be string`.
 
+    The same goes for completing a pending offer: the ack of a `subscribe` (sent
+    again before each offer to refresh the token) has no `session_id` either. An
+    offer completes on an ack that echoes its `correlation_id`, or on the first
+    ack that carries a `session_id`; any other ack is left alone.
+
 ### Answer
 
 Received from the device (offer mode) or sent by the client (answer mode).
@@ -432,9 +437,13 @@ All callbacks are optional and async (`async def`). `on_event` receives signalin
 | `connect()` | Connect and subscribe to the signaling WS |
 | `disconnect()` | Disconnect and clean up session state |
 | `send_offer(device_id, sdp, module_id=None)` | Send an SDP offer (offer mode). Returns `session_id` |
-| `send_answer(sdp)` | Send an SDP answer (answer mode). Requires prior `set_session_from_push()` |
-| `send_candidate(candidate, sdp_m_line_index)` | Send an ICE candidate |
-| `send_terminate()` | Terminate the current session |
+| `send_answer(sdp, session_id=None)` | Send an SDP answer (answer mode). Requires prior `set_session_from_push()` |
+| `send_candidate(candidate, sdp_m_line_index, session_id=None)` | Send an ICE candidate |
+| `send_terminate(session_id=None)` | Terminate a session; the others stay open |
+
+The client keeps `tag_id`, `correlation_id` and `device_id` per session, so a
+caller holding several sessions (one per camera, for instance) can address one
+by passing its `session_id`. Without it, the methods use the most recent session.
 | `set_session_from_push(session_id, tag_id, correlation_id, device_id)` | Set session state from a push WS event for answer mode |
 | `resubscribe()` | Re-subscribe on the existing connection with a refreshed OAuth token, without disconnecting |
 | `ensure_connected()` | Ensure the signaling WS is connected, reconnecting if needed |

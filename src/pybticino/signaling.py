@@ -19,9 +19,12 @@ Browser compatibility note:
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
+import itertools
 import json
 import logging
 import ssl
+import time
 from typing import Any
 
 import websockets
@@ -37,6 +40,15 @@ _LOGGER = logging.getLogger(__name__)
 OnAnswerCallback = Callable[[str, str], Awaitable[None]]  # (session_id, sdp)
 OnCandidateCallback = Callable[[str, dict], Awaitable[None]]  # (session_id, ice_candidate)
 OnEventCallback = Callable[[str, str, dict], Awaitable[None]]  # (session_id, event_type, data)
+
+
+@dataclass(slots=True)
+class _Session:
+    """What the server needs, besides the session id, to address one session."""
+
+    tag_id: str | None
+    correlation_id: str | None
+    device_id: str | None
 
 
 class SignalingClient:
@@ -75,10 +87,20 @@ class SignalingClient:
         self._connection_lock = asyncio.Lock()
         self._is_connected = False
 
+        # Correlation ids for outgoing offers: numeric strings, like the app's,
+        # unique per client. Acks are matched on them, so they must not repeat.
+        self._correlation_ids = itertools.count(time.time_ns() // 1_000_000)
+
         # Pending ack futures: correlation_id -> Future[dict]
         self._pending_acks: dict[str, asyncio.Future] = {}
+        # Bridge each pending offer was sent to: correlation_id -> device_id
+        self._pending_offer_devices: dict[str, str] = {}
 
-        # Active session state (set after successful offer ack)
+        # Every open session, so a caller holding several can address one.
+        self._sessions: dict[str, _Session] = {}
+
+        # Most recent session (set after successful offer ack). Used when a
+        # send method is called without a session_id.
         self._session_id: str | None = None
         self._tag_id: str | None = None
         self._correlation_id: str | None = None
@@ -145,6 +167,7 @@ class SignalingClient:
                 if not fut.done():
                     fut.cancel()
             self._pending_acks.clear()
+            self._pending_offer_devices.clear()
 
             # Cancel listener
             if self._listener_task and not self._listener_task.done():
@@ -161,6 +184,7 @@ class SignalingClient:
                     await ws.close()
 
             # Clear session state
+            self._sessions.clear()
             self._session_id = None
             self._tag_id = None
             self._correlation_id = None
@@ -268,13 +292,44 @@ class SignalingClient:
         if tag_id is not None:
             self._tag_id = tag_id
 
-        # Resolve any pending ack future
-        # The ack doesn't contain correlation_id, so resolve the most recent pending
-        for corr_id, fut in list(self._pending_acks.items()):
-            if not fut.done():
-                fut.set_result(message)
-                del self._pending_acks[corr_id]
-                break
+        corr_id = self._match_pending_offer(message)
+        if corr_id is None:
+            # A subscribe, candidate or terminate ack: no offer is waiting on it.
+            return
+
+        fut = self._pending_acks.pop(corr_id)
+        device_id = self._pending_offer_devices.pop(corr_id, None)
+        if session_id:
+            self._sessions[session_id] = _Session(tag_id=tag_id, correlation_id=corr_id, device_id=device_id)
+        if not fut.done():
+            fut.set_result(message)
+
+    def _match_pending_offer(self, ack: dict[str, Any]) -> str | None:
+        """Return the correlation id of the pending offer this ack answers.
+
+        An ack that echoes a pending offer's correlation id answers that offer.
+        Otherwise only an ack carrying a session id can be an offer ack: the
+        resubscribe ack sent before every offer has none, and taking it for the
+        offer's ack completes the offer with an empty session id.
+        """
+        corr = ack.get("correlation_id")
+        if corr is not None and str(corr) in self._pending_acks:
+            return str(corr)
+        if not ack.get("session_id"):
+            return None
+        return next((cid for cid, fut in self._pending_acks.items() if not fut.done()), None)
+
+    def _resolve_session(self, session_id: str | None) -> tuple[str, _Session] | None:
+        """Return the id and fields of the named session, or of the current one."""
+        sid = session_id or self._session_id
+        if not sid:
+            return None
+        record = self._sessions.get(sid)
+        if record is not None:
+            return sid, record
+        if sid == self._session_id:
+            return sid, _Session(tag_id=self._tag_id, correlation_id=self._correlation_id, device_id=self._device_id)
+        return None
 
     async def _send(self, message: dict[str, Any]) -> None:
         """Send a JSON message on the signaling WS."""
@@ -333,7 +388,7 @@ class SignalingClient:
             PyBticinoException: If the offer fails or times out.
 
         """
-        correlation_id = str(id(asyncio.current_task()))
+        correlation_id = str(next(self._correlation_ids))
         self._device_id = device_id
         self._correlation_id = correlation_id
 
@@ -355,31 +410,39 @@ class SignalingClient:
         loop = asyncio.get_running_loop()
         ack_future: asyncio.Future[dict] = loop.create_future()
         self._pending_acks[correlation_id] = ack_future
+        self._pending_offer_devices[correlation_id] = device_id
 
         await self._send(message)
 
         try:
             ack = await asyncio.wait_for(ack_future, timeout=30)
-            session_id = ack.get("session_id", "")
-            _LOGGER.info("Offer sent, session_id=%s", session_id)
-            return session_id
         except TimeoutError as e:
             self._pending_acks.pop(correlation_id, None)
+            self._pending_offer_devices.pop(correlation_id, None)
             err_msg = "Timeout waiting for offer ack"
             raise PyBticinoException(err_msg) from e
 
-    async def send_answer(self, sdp: str) -> None:
-        """Send an SDP answer (for incoming calls).
+        session_id = ack.get("session_id", "")
+        if session_id:
+            self._sessions.setdefault(
+                session_id,
+                _Session(tag_id=ack.get("tag_id"), correlation_id=correlation_id, device_id=device_id),
+            )
+        _LOGGER.info("Offer sent, session_id=%s", session_id)
+        return session_id
 
-        Uses the session state (session_id, tag_id, device_id, correlation_id)
-        set by the most recent offer or ack.
+    async def send_answer(self, sdp: str, session_id: str | None = None) -> None:
+        """Send an SDP answer (for incoming calls).
 
         Args:
             sdp: The SDP answer string.
+            session_id: The session to answer. Defaults to the most recent one.
 
         """
-        if not self._session_id:
+        resolved = self._resolve_session(session_id)
+        if resolved is None:
             raise PyBticinoException("No active session to send answer to")
+        sid, session = resolved
 
         message = {
             "action": "rtc",
@@ -390,24 +453,27 @@ class SignalingClient:
                     "sdp": sdp,
                 },
             },
-            "session_id": self._session_id,
-            "tag_id": self._tag_id,
-            "device_id": self._device_id,
-            "correlation_id": self._correlation_id,
+            "session_id": sid,
+            "tag_id": session.tag_id,
+            "device_id": session.device_id,
+            "correlation_id": session.correlation_id,
         }
         await self._send(message)
-        _LOGGER.info("Answer sent for session %s", self._session_id)
+        _LOGGER.info("Answer sent for session %s", sid)
 
-    async def send_candidate(self, candidate: str, sdp_m_line_index: int) -> None:
+    async def send_candidate(self, candidate: str, sdp_m_line_index: int, session_id: str | None = None) -> None:
         """Send an ICE candidate.
 
         Args:
             candidate: The ICE candidate string.
             sdp_m_line_index: The m-line index for the candidate.
+            session_id: The session it belongs to. Defaults to the most recent one.
 
         """
-        if not self._session_id:
+        resolved = self._resolve_session(session_id)
+        if resolved is None:
             raise PyBticinoException("No active session to send candidate to")
+        sid, session = resolved
 
         message = {
             "action": "rtc",
@@ -418,31 +484,41 @@ class SignalingClient:
                     "candidate": candidate,
                 },
             },
-            "session_id": self._session_id,
-            "tag_id": self._tag_id,
-            "device_id": self._device_id,
-            "correlation_id": self._correlation_id,
+            "session_id": sid,
+            "tag_id": session.tag_id,
+            "device_id": session.device_id,
+            "correlation_id": session.correlation_id,
         }
         await self._send(message)
 
-    async def send_terminate(self) -> None:
-        """Terminate the current call session."""
-        if not self._session_id:
-            _LOGGER.debug("No active session to terminate")
+    async def send_terminate(self, session_id: str | None = None) -> None:
+        """Terminate a call session.
+
+        Args:
+            session_id: The session to terminate. Defaults to the most recent
+                one. Other sessions, including the most recent, are left intact.
+
+        """
+        resolved = self._resolve_session(session_id)
+        if resolved is None:
+            _LOGGER.debug("No active session to terminate (session_id=%s)", session_id)
             return
+        sid, session = resolved
 
         message = {
             "action": "rtc",
             "data": {"type": "terminate"},
-            "session_id": self._session_id,
-            "tag_id": self._tag_id,
-            "device_id": self._device_id,
-            "correlation_id": self._correlation_id,
+            "session_id": sid,
+            "tag_id": session.tag_id,
+            "device_id": session.device_id,
+            "correlation_id": session.correlation_id,
         }
         await self._send(message)
-        _LOGGER.info("Terminate sent for session %s", self._session_id)
-        self._session_id = None
-        self._tag_id = None
+        _LOGGER.info("Terminate sent for session %s", sid)
+        self._sessions.pop(sid, None)
+        if sid == self._session_id:
+            self._session_id = None
+            self._tag_id = None
 
     def set_session_from_push(
         self,
@@ -464,6 +540,7 @@ class SignalingClient:
             device_id: The bridge MAC (extra_params.device_id).
 
         """
+        self._sessions[session_id] = _Session(tag_id=tag_id, correlation_id=correlation_id, device_id=device_id)
         self._session_id = session_id
         self._tag_id = tag_id
         self._correlation_id = correlation_id

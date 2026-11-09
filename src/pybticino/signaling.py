@@ -561,6 +561,53 @@ class SignalingClient:
             _LOGGER.debug("Answer to session %s acked", sid)
         return ack
 
+    async def send_player(self, value: str, session_id: str | None = None) -> None:
+        """Send a ``player`` command on a session.
+
+        Answering a call is two messages, not one. The official app's answer
+        button sends ``unmute`` on the session it has just answered, and until
+        that arrives an EasyKit/BDIY keeps ringing: it never reports
+        ``accepted_call`` and leaves the outdoor microphone and speaker closed,
+        even though its video already flows.
+
+        The command toggles, so it is sent exactly once per call: a second one
+        mutes the call again in both directions, while the device's RTCP
+        receiver report still shows the client's audio arriving unharmed.
+
+        The one ordering rule is that it must follow the device's own
+        ``incoming_call`` status push, which on a BDIY can trail the call offer
+        by more than a second; earlier than that the device drops it silently
+        and never reports ``accepted_call``. It does **not** have to wait for
+        media: an ``unmute`` 85 ms after the answer's ack took a call off hold
+        and opened the outdoor microphone, the status push having arrived by
+        then. Waiting until the answering client's media is flowing is merely
+        an easy way to be after that push, and is the point at which the app's
+        own button becomes pressable.
+
+        Args:
+            value: The player command. ``"unmute"`` takes a call off hold.
+            session_id: The session it applies to. Defaults to the most recent
+                one.
+
+        """
+        resolved = self._resolve_session(session_id)
+        if resolved is None:
+            raise PyBticinoException("No active session to send a player command to")
+        sid, session = resolved
+
+        message = {
+            "action": "rtc",
+            "data": {"type": "player", "value": value},
+            "session_id": sid,
+            "tag_id": session.tag_id,
+            "device_id": session.device_id,
+            # Its own id, as the app sends: the command is a decision of its
+            # own and not part of the answer it follows.
+            "correlation_id": str(next(self._correlation_ids)),
+        }
+        await self._send(message)
+        _LOGGER.info("Player %r sent for session %s", value, sid)
+
     async def send_candidate(self, candidate: str, sdp_m_line_index: int, session_id: str | None = None) -> None:
         """Send an ICE candidate.
 

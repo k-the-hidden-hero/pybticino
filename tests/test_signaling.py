@@ -218,6 +218,66 @@ class TestSignalingMessages:
 
         assert not offer_future.done()
 
+    async def test_send_player_message_format(self, signaling_client):
+        """send_player should address the session with an id of its own."""
+        sent_messages = []
+
+        async def mock_send(msg):
+            sent_messages.append(msg)
+
+        signaling_client._send = mock_send
+        signaling_client._session_id = "sess-123"
+        signaling_client._tag_id = "tag-abc"
+        signaling_client._device_id = MOCK_BRIDGE_ID
+        signaling_client._correlation_id = "corr-456"
+
+        await signaling_client.send_player("unmute")
+
+        assert len(sent_messages) == 1
+        msg = sent_messages[0]
+        assert msg["action"] == "rtc"
+        assert msg["data"] == {"type": "player", "value": "unmute"}
+        assert msg["session_id"] == "sess-123"
+        assert msg["tag_id"] == "tag-abc"
+        assert msg["device_id"] == MOCK_BRIDGE_ID
+        # The command is not part of the answer it follows, so it carries its
+        # own correlation id, as the official app's answer button does.
+        assert msg["correlation_id"] != "corr-456"
+
+    async def test_send_player_names_one_of_several_sessions(self, signaling_client):
+        """send_player should address the session it is given, not the latest."""
+        sent_messages = []
+
+        async def mock_send(msg):
+            sent_messages.append(msg)
+
+        signaling_client._send = mock_send
+        signaling_client.set_session_from_push(
+            session_id="sess-old",
+            tag_id="tag-old",
+            correlation_id="corr-old",
+            device_id=MOCK_BRIDGE_ID,
+        )
+        signaling_client.set_session_from_push(
+            session_id="sess-new",
+            tag_id="tag-new",
+            correlation_id="corr-new",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        await signaling_client.send_player("unmute", session_id="sess-old")
+
+        msg = sent_messages[0]
+        assert msg["session_id"] == "sess-old"
+        assert msg["tag_id"] == "tag-old"
+
+    async def test_send_player_without_session_raises(self, signaling_client):
+        """send_player should refuse when there is no session to address."""
+        signaling_client._send = AsyncMock()
+
+        with pytest.raises(PyBticinoException):
+            await signaling_client.send_player("unmute")
+
     async def test_send_candidate_message_format(self, signaling_client):
         """send_candidate should format ICE candidate correctly."""
         sent_messages = []

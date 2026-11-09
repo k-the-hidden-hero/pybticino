@@ -247,6 +247,40 @@ Received from the device (offer mode) or sent by the client (answer mode).
     field 3 ms earlier — and carries `correlation_id: 0` and no session id;
     taking it for the answer's ack releases the candidates too early.
 
+### Player
+
+Sent by the client to take an answered call off hold. The official app's answer
+button sends it on the session it has just answered.
+
+```json
+{
+    "action": "rtc",
+    "data": {
+        "type": "player",
+        "value": "unmute"
+    },
+    "session_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "tag_id": "base64_encoded_tag",
+    "device_id": "00:03:50:xx:xx:xx",
+    "correlation_id": "12346"
+}
+```
+
+!!! warning "Send exactly one, and not before the device has published the ring"
+    The command toggles: a second `unmute` mutes the call again in both
+    directions, while the device's RTCP receiver report still shows the client's
+    audio arriving with no loss.
+
+    The one ordering rule is that it must follow the device's own
+    `incoming_call` status push on the **push** WS, which on an EasyKit/BDIY can
+    trail the call offer by more than a second; earlier than that the device
+    drops it silently and never reports `accepted_call`. It does not have to
+    wait for media: an `unmute` 85 ms after the answer's ack took a call off
+    hold and opened the outdoor microphone, the status push having arrived by
+    then. Nothing on the signalling socket marks the start of media, so a
+    caller that does not watch the push WS can simply wait until its own media
+    is flowing, which is also when the app's button becomes pressable.
+
 ### ICE Candidate
 
 Exchanged bidirectionally for trickle ICE.
@@ -379,8 +413,9 @@ Received when the call is answered by another device (e.g., the physical handset
    ├─ exchange ICE candidates (only after that ack; see Answer)
    └─ WebRTC media flowing
 5. CONNECTED (media)
-   └─ send_terminate() or receive terminate
-6. TERMINATED
+   └─ send_player("unmute") → device reports accepted_call, opens its audio
+6. send_terminate() or receive terminate
+7. TERMINATED
 ```
 
 ## Device Timeout
@@ -450,6 +485,7 @@ All callbacks are optional and async (`async def`). `on_event` receives signalin
 | `disconnect()` | Disconnect and clean up session state |
 | `send_offer(device_id, sdp, module_id=None)` | Send an SDP offer (offer mode). Returns `session_id` |
 | `send_answer(sdp, session_id=None, wait_for_ack=True, timeout=10)` | Send an SDP answer (answer mode) and return its ack. Requires prior `set_session_from_push()` |
+| `send_player(value, session_id=None)` | Send a `player` command, e.g. `unmute` to take an answered call off hold |
 | `send_candidate(candidate, sdp_m_line_index, session_id=None)` | Send an ICE candidate |
 | `send_terminate(session_id=None)` | Terminate a session; the others stay open |
 

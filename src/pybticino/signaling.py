@@ -36,6 +36,10 @@ from .exceptions import PyBticinoException
 
 _LOGGER = logging.getLogger(__name__)
 
+# How long to wait for the ack of an answer. The official app registers a 10 s
+# pending ack for every outgoing signaling message, whatever its type.
+ANSWER_ACK_TIMEOUT = 10
+
 # Type aliases for callbacks
 OnAnswerCallback = Callable[[str, str], Awaitable[None]]  # (session_id, sdp)
 OnCandidateCallback = Callable[[str, dict], Awaitable[None]]  # (session_id, ice_candidate)
@@ -95,6 +99,11 @@ class SignalingClient:
         self._pending_acks: dict[str, asyncio.Future] = {}
         # Bridge each pending offer was sent to: correlation_id -> device_id
         self._pending_offer_devices: dict[str, str] = {}
+        # Answers waiting for their ack: correlation_id -> Future[dict]. Kept
+        # apart from the offers: an answer's ack carries no new session state,
+        # so it must not be taken for the ack of an offer, nor overwrite the
+        # session it belongs to.
+        self._pending_answer_acks: dict[str, asyncio.Future] = {}
 
         # Every open session, so a caller holding several can address one.
         self._sessions: dict[str, _Session] = {}
@@ -189,6 +198,13 @@ class SignalingClient:
             self._tag_id = None
             self._correlation_id = None
             self._device_id = None
+
+            # No ack can arrive on a closed socket. Without this, an answer
+            # sent just before a disconnect waits out its whole timeout.
+            for fut in self._pending_answer_acks.values():
+                if not fut.done():
+                    fut.set_exception(PyBticinoException("Signaling disconnected before the answer was acked"))
+            self._pending_answer_acks.clear()
 
             _LOGGER.info("Signaling client disconnected")
 
@@ -292,6 +308,13 @@ class SignalingClient:
         if tag_id is not None:
             self._tag_id = tag_id
 
+        answer_corr = self._match_pending_answer(message)
+        if answer_corr is not None:
+            fut = self._pending_answer_acks.pop(answer_corr)
+            if not fut.done():
+                fut.set_result(message)
+            return
+
         corr_id = self._match_pending_offer(message)
         if corr_id is None:
             # A subscribe, candidate or terminate ack: no offer is waiting on it.
@@ -303,6 +326,21 @@ class SignalingClient:
             self._sessions[session_id] = _Session(tag_id=tag_id, correlation_id=corr_id, device_id=device_id)
         if not fut.done():
             fut.set_result(message)
+
+    def _match_pending_answer(self, ack: dict[str, Any]) -> str | None:
+        """Return the correlation id of the pending answer this ack answers.
+
+        Only an ack echoing a waiting answer's correlation id counts. There is
+        no fallback on the session id: the acks of a resubscribe and of a
+        candidate arrive on the same socket, and taking either for the answer's
+        ack is what let candidates go out before the device had accepted the
+        answer (bticino_intercom#72).
+        """
+        corr = ack.get("correlation_id")
+        if corr is None:
+            return None
+        corr = str(corr)
+        return corr if corr in self._pending_answer_acks else None
 
     def _match_pending_offer(self, ack: dict[str, Any]) -> str | None:
         """Return the correlation id of the pending offer this ack answers.
@@ -431,12 +469,42 @@ class SignalingClient:
         _LOGGER.info("Offer sent, session_id=%s", session_id)
         return session_id
 
-    async def send_answer(self, sdp: str, session_id: str | None = None) -> None:
-        """Send an SDP answer (for incoming calls).
+    async def send_answer(
+        self,
+        sdp: str,
+        session_id: str | None = None,
+        *,
+        wait_for_ack: bool = True,
+        timeout: float = ANSWER_ACK_TIMEOUT,
+    ) -> dict[str, Any] | None:
+        """Send an SDP answer (for incoming calls) and wait for its ack.
+
+        The device refuses an ICE candidate that arrives before it has accepted
+        the answer ("code 13, Received ICE candidate before answer"), so a
+        caller awaits this before trickling candidates.
+
+        The ack is matched on the session's correlation id, not on a fresh one:
+        the cloud acks an answer with the correlation id of the offer that
+        opened the session, whatever the answer carried. Measured on an
+        EasyKit/BDIY by answering with a correlation id of our own, which came
+        back acked under the offer's (bticino_intercom#72).
 
         Args:
             sdp: The SDP answer string.
             session_id: The session to answer. Defaults to the most recent one.
+            wait_for_ack: Whether to wait for the ack before returning.
+            timeout: How long to wait for it, in seconds.
+
+        Returns:
+            The ack, or ``None`` when not waiting for it. A refused answer is
+            returned rather than raised: the ack carries the reason, and only
+            the caller can act on it. A stale OAuth token, for instance, acks
+            with ``{"code": 2, "message": "Invalid access_token"}`` and is
+            recovered by reconnecting the socket and answering again.
+
+        Raises:
+            PyBticinoException: If there is no session to answer, or the ack
+                does not arrive within the timeout.
 
         """
         resolved = self._resolve_session(session_id)
@@ -458,8 +526,87 @@ class SignalingClient:
             "device_id": session.device_id,
             "correlation_id": session.correlation_id,
         }
-        await self._send(message)
+
+        corr_id = session.correlation_id
+        ack_future: asyncio.Future[dict] | None = None
+        if wait_for_ack and corr_id is not None:
+            ack_future = asyncio.get_running_loop().create_future()
+            self._pending_answer_acks[str(corr_id)] = ack_future
+        elif wait_for_ack:
+            # Nothing to match an ack on. Rather than block for the timeout,
+            # send and let the caller proceed as it did before.
+            _LOGGER.debug("Session %s has no correlation id; not waiting for the answer ack", sid)
+
+        try:
+            await self._send(message)
+        except Exception:
+            if ack_future is not None:
+                self._pending_answer_acks.pop(str(corr_id), None)
+            raise
+
         _LOGGER.info("Answer sent for session %s", sid)
+        if ack_future is None:
+            return None
+
+        try:
+            ack = await asyncio.wait_for(ack_future, timeout=timeout)
+        except TimeoutError as e:
+            self._pending_answer_acks.pop(str(corr_id), None)
+            err_msg = f"Timeout waiting for the ack of the answer to session {sid}"
+            raise PyBticinoException(err_msg) from e
+
+        if ack.get("error"):
+            _LOGGER.warning("Answer to session %s refused: %s", sid, ack["error"])
+        else:
+            _LOGGER.debug("Answer to session %s acked", sid)
+        return ack
+
+    async def send_player(self, value: str, session_id: str | None = None) -> None:
+        """Send a ``player`` command on a session.
+
+        Answering a call is two messages, not one. The official app's answer
+        button sends ``unmute`` on the session it has just answered, and until
+        that arrives an EasyKit/BDIY keeps ringing: it never reports
+        ``accepted_call`` and leaves the outdoor microphone and speaker closed,
+        even though its video already flows.
+
+        The command toggles, so it is sent exactly once per call: a second one
+        mutes the call again in both directions, while the device's RTCP
+        receiver report still shows the client's audio arriving unharmed.
+
+        The one ordering rule is that it must follow the device's own
+        ``incoming_call`` status push, which on a BDIY can trail the call offer
+        by more than a second; earlier than that the device drops it silently
+        and never reports ``accepted_call``. It does **not** have to wait for
+        media: an ``unmute`` 85 ms after the answer's ack took a call off hold
+        and opened the outdoor microphone, the status push having arrived by
+        then. Waiting until the answering client's media is flowing is merely
+        an easy way to be after that push, and is the point at which the app's
+        own button becomes pressable.
+
+        Args:
+            value: The player command. ``"unmute"`` takes a call off hold.
+            session_id: The session it applies to. Defaults to the most recent
+                one.
+
+        """
+        resolved = self._resolve_session(session_id)
+        if resolved is None:
+            raise PyBticinoException("No active session to send a player command to")
+        sid, session = resolved
+
+        message = {
+            "action": "rtc",
+            "data": {"type": "player", "value": value},
+            "session_id": sid,
+            "tag_id": session.tag_id,
+            "device_id": session.device_id,
+            # Its own id, as the app sends: the command is a decision of its
+            # own and not part of the answer it follows.
+            "correlation_id": str(next(self._correlation_ids)),
+        }
+        await self._send(message)
+        _LOGGER.info("Player %r sent for session %s", value, sid)
 
     async def send_candidate(self, candidate: str, sdp_m_line_index: int, session_id: str | None = None) -> None:
         """Send an ICE candidate.

@@ -1,5 +1,7 @@
 """Tests for AsyncAccount API interactions."""
 
+import logging
+
 from aioresponses import aioresponses
 import pytest
 
@@ -81,6 +83,21 @@ async def test_update_topology(authenticated_account):
     assert MOCK_BRIDGE_ID in module_ids
     assert MOCK_LOCK_ID in module_ids
     assert MOCK_LIGHT_ID in module_ids
+
+
+async def test_api_request_does_not_log_authorization_header(authenticated_account, caplog):
+    """API debug logs must not expose any part of the bearer token."""
+    account = authenticated_account
+    sensitive_token = "sensitive-bearer-token-that-must-not-be-logged"
+    account.auth_handler._access_token = sensitive_token
+    caplog.set_level(logging.DEBUG, logger="pybticino.account")
+
+    with aioresponses() as m:
+        m.post(HOMESDATA_URL, payload=build_homesdata_response())
+        await account.async_update_topology()
+
+    assert "'Authorization': '<redacted>'" in caplog.text
+    assert sensitive_token not in caplog.text
 
 
 async def test_update_topology_empty_homes(authenticated_account):

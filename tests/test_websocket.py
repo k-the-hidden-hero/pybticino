@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -99,6 +100,31 @@ async def test_connect_and_subscribe():
     assert sent_payload["action"] == "Subscribe"
 
     # Cleanup
+    await client.disconnect()
+
+
+async def test_subscribe_does_not_log_access_token(caplog):
+    """WebSocket subscription debug logs must redact the access token."""
+    handler = AuthHandler(MOCK_USERNAME, MOCK_PASSWORD)
+    handler._access_token = MOCK_ACCESS_TOKEN
+    handler._token_expires_at = 9999999999.0
+
+    async def cb(msg):
+        pass
+
+    client = WebsocketClient(handler, cb)
+    mock_ws = AsyncMock()
+    mock_ws.state = MagicMock()
+    mock_ws.send = AsyncMock()
+    mock_ws.recv = AsyncMock(return_value=json.dumps({"status": "ok"}))
+    mock_ws.close = AsyncMock()
+    caplog.set_level(logging.DEBUG, logger="pybticino.websocket")
+
+    with patch("pybticino.websocket.websockets.connect", new_callable=AsyncMock, return_value=mock_ws):
+        await client.connect()
+
+    assert "'access_token': '<redacted>'" in caplog.text
+    assert MOCK_ACCESS_TOKEN not in caplog.text
     await client.disconnect()
 
 

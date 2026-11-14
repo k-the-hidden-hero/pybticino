@@ -116,7 +116,10 @@ class WebsocketClient:
                 "version": self._app_version,
             }
             _LOGGER.info("Sending WebSocket subscription message...")
-            _LOGGER.debug("Subscribe payload: %s", subscribe_message)
+            _LOGGER.debug(
+                "Subscribe payload: %s",
+                {**subscribe_message, "access_token": "<redacted>"},
+            )
             await self._websocket.send(json.dumps(subscribe_message))
 
             # Wait for the confirmation message (simple 'ok' status)

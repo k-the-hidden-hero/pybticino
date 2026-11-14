@@ -1,5 +1,6 @@
 """Tests for AuthHandler authentication and token management."""
 
+import logging
 import time
 
 from aioresponses import aioresponses
@@ -34,6 +35,21 @@ async def test_authenticate_success():
         assert handler._token_expires_at is not None
         assert not handler._is_token_expired()
 
+    await handler.close_session()
+
+
+async def test_authenticate_does_not_log_tokens(caplog):
+    """Authentication debug logs must not expose OAuth tokens."""
+    handler = AuthHandler(MOCK_USERNAME, MOCK_PASSWORD)
+    caplog.set_level(logging.DEBUG, logger="pybticino.auth")
+
+    with aioresponses() as m:
+        m.post(TOKEN_URL, payload=build_token_response())
+        await handler.get_access_token()
+
+    assert "Token response received" in caplog.text
+    assert MOCK_ACCESS_TOKEN not in caplog.text
+    assert MOCK_REFRESH_TOKEN not in caplog.text
     await handler.close_session()
 
 
@@ -120,6 +136,34 @@ async def test_token_refresh_on_expiry():
 
         assert token == new_token
 
+    await handler.close_session()
+
+
+async def test_token_refresh_does_not_log_tokens(caplog):
+    """Token refresh debug logs must not expose OAuth tokens."""
+    handler = AuthHandler(MOCK_USERNAME, MOCK_PASSWORD)
+    handler.set_tokens(
+        access_token=MOCK_ACCESS_TOKEN,
+        refresh_token=MOCK_REFRESH_TOKEN,
+        expires_at=time.time() - 10,
+    )
+    refreshed_access_token = "refreshed-access-token-sensitive"
+    refreshed_refresh_token = "refreshed-refresh-token-sensitive"
+    caplog.set_level(logging.DEBUG, logger="pybticino.auth")
+
+    with aioresponses() as m:
+        m.post(
+            TOKEN_URL,
+            payload=build_token_response(
+                access_token=refreshed_access_token,
+                refresh_token=refreshed_refresh_token,
+            ),
+        )
+        await handler.get_access_token()
+
+    assert "Token refresh response received" in caplog.text
+    assert refreshed_access_token not in caplog.text
+    assert refreshed_refresh_token not in caplog.text
     await handler.close_session()
 
 

@@ -199,14 +199,20 @@ class SignalingClient:
             self._correlation_id = None
             self._device_id = None
 
-            # No ack can arrive on a closed socket. Without this, an answer
-            # sent just before a disconnect waits out its whole timeout.
-            for fut in self._pending_answer_acks.values():
-                if not fut.done():
-                    fut.set_exception(PyBticinoException("Signaling disconnected before the answer was acked"))
-            self._pending_answer_acks.clear()
+            self._fail_pending_answers("Signaling disconnected before the answer was acked")
 
             _LOGGER.info("Signaling client disconnected")
+
+    def _fail_pending_answers(self, reason: str) -> None:
+        """Fail every answer still waiting for its ack.
+
+        No ack can arrive on a closed socket. Without this, an answer sent just
+        before the socket goes away waits out its whole timeout.
+        """
+        for fut in self._pending_answer_acks.values():
+            if not fut.done():
+                fut.set_exception(PyBticinoException(reason))
+        self._pending_answer_acks.clear()
 
     async def _subscribe(self) -> None:
         """Subscribe to the signaling WS with app_security."""
@@ -258,6 +264,8 @@ class SignalingClient:
             raise
         finally:
             self._is_connected = False
+            # Also when the server closes the socket, not only on disconnect().
+            self._fail_pending_answers("Signaling socket closed before the answer was acked")
             _LOGGER.info("Signaling listener stopped")
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
@@ -337,7 +345,7 @@ class SignalingClient:
         answer (bticino_intercom#72).
         """
         corr = ack.get("correlation_id")
-        if corr is None:
+        if not corr:
             return None
         corr = str(corr)
         return corr if corr in self._pending_answer_acks else None
@@ -499,18 +507,28 @@ class SignalingClient:
             The ack, or ``None`` when not waiting for it. A refused answer is
             returned rather than raised: the ack carries the reason, and only
             the caller can act on it. A stale OAuth token, for instance, acks
-            with ``{"code": 2, "message": "Invalid access_token"}`` and is
-            recovered by reconnecting the socket and answering again.
+            with ``{"code": 2, "message": "Invalid access_token"}``. To recover,
+            reconnect the socket, call `set_session_from_push` again with the
+            push's fields (a disconnect forgets every session), and answer
+            again.
 
         Raises:
-            PyBticinoException: If there is no session to answer, or the ack
-                does not arrive within the timeout.
+            PyBticinoException: If there is no session to answer, an answer to
+                it is already waiting for its ack, the socket closes first, or
+                the ack does not arrive within the timeout.
 
         """
         resolved = self._resolve_session(session_id)
         if resolved is None:
             raise PyBticinoException("No active session to send answer to")
         sid, session = resolved
+
+        # Both answers would be acked under the same correlation id, with no
+        # way to tell which ack is whose.
+        corr_id = str(session.correlation_id) if session.correlation_id else None
+        if wait_for_ack and corr_id is not None and corr_id in self._pending_answer_acks:
+            err_msg = f"An answer to session {sid} is already waiting for its ack"
+            raise PyBticinoException(err_msg)
 
         message = {
             "action": "rtc",
@@ -527,11 +545,10 @@ class SignalingClient:
             "correlation_id": session.correlation_id,
         }
 
-        corr_id = session.correlation_id
         ack_future: asyncio.Future[dict] | None = None
         if wait_for_ack and corr_id is not None:
             ack_future = asyncio.get_running_loop().create_future()
-            self._pending_answer_acks[str(corr_id)] = ack_future
+            self._pending_answer_acks[corr_id] = ack_future
         elif wait_for_ack:
             # Nothing to match an ack on. Rather than block for the timeout,
             # send and let the caller proceed as it did before.
@@ -539,21 +556,19 @@ class SignalingClient:
 
         try:
             await self._send(message)
-        except Exception:
-            if ack_future is not None:
-                self._pending_answer_acks.pop(str(corr_id), None)
-            raise
-
-        _LOGGER.info("Answer sent for session %s", sid)
-        if ack_future is None:
-            return None
-
-        try:
+            _LOGGER.info("Answer sent for session %s", sid)
+            if ack_future is None:
+                return None
             ack = await asyncio.wait_for(ack_future, timeout=timeout)
         except TimeoutError as e:
-            self._pending_answer_acks.pop(str(corr_id), None)
             err_msg = f"Timeout waiting for the ack of the answer to session {sid}"
             raise PyBticinoException(err_msg) from e
+        finally:
+            # A failed send, a timeout or a cancelled caller must not leave the
+            # future behind. Only remove our own: a terminate may have failed
+            # it and let a later answer register under the same id.
+            if ack_future is not None and self._pending_answer_acks.get(corr_id) is ack_future:
+                del self._pending_answer_acks[corr_id]
 
         if ack.get("error"):
             _LOGGER.warning("Answer to session %s refused: %s", sid, ack["error"])
@@ -568,6 +583,11 @@ class SignalingClient:
             candidate: The ICE candidate string.
             sdp_m_line_index: The m-line index for the candidate.
             session_id: The session it belongs to. Defaults to the most recent one.
+
+        Send candidates only once `send_answer` has returned. A candidate carries
+        the session's correlation id, so its ack could be taken for the answer's
+        while the answer is still waiting; and the device refuses a candidate
+        that arrives before it has accepted the answer.
 
         """
         resolved = self._resolve_session(session_id)
@@ -598,12 +618,21 @@ class SignalingClient:
             session_id: The session to terminate. Defaults to the most recent
                 one. Other sessions, including the most recent, are left intact.
 
+        An answer to this session still waiting for its ack fails here, before
+        the terminate goes out: the terminate carries the session's correlation
+        id, and its ack would otherwise be taken for the answer's.
+
         """
         resolved = self._resolve_session(session_id)
         if resolved is None:
             _LOGGER.debug("No active session to terminate (session_id=%s)", session_id)
             return
         sid, session = resolved
+
+        if session.correlation_id:
+            pending = self._pending_answer_acks.pop(str(session.correlation_id), None)
+            if pending is not None and not pending.done():
+                pending.set_exception(PyBticinoException(f"Session {sid} was terminated before the answer was acked"))
 
         message = {
             "action": "rtc",

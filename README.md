@@ -96,12 +96,16 @@ async def main():
 asyncio.run(main())
 ```
 
-### Re-subscribe (keep connection alive)
+### Fresh token on a long-lived connection
 
 ```python
-# Refresh token on existing connection without disconnecting.
-# Call this periodically (e.g., every hour) to prevent token expiry.
-await ws.resubscribe()
+# Every Subscribe on a connection adds a subscription, so ws.resubscribe()
+# makes every push arrive once more. Subscribe on a new connection instead,
+# then close the old one.
+fresh = WebsocketClient(auth, on_message)
+await fresh.connect()
+await ws.disconnect()
+ws = fresh
 ```
 
 ## API endpoints

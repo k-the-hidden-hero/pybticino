@@ -248,8 +248,11 @@ class WebsocketClient:
         """Re-subscribe on the existing connection with a fresh token.
 
         Sends a new Subscribe message with a refreshed OAuth token on the
-        current WebSocket connection. This keeps the session alive without
-        disconnecting and reconnecting. Matches the official Android app behavior.
+        current WebSocket connection. The server keeps the subscriptions
+        already made on it, so from then on every push arrives once more,
+        until the connection closes. To move to a fresh token without that,
+        connect a second client and disconnect this one once it has
+        subscribed (see docs/websocket-events.md).
 
         Note: This only sends the message — it does NOT wait for a response,
         because the listener loop is already consuming recv(). The server's

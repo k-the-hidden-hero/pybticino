@@ -8,8 +8,10 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      # Check for updates to GitHub Actions every weekday
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
 
   - package-ecosystem: "pip" # See documentation for possible values
     directory: "/" # Location of package manifests
@@ -17,3 +19,7 @@ updates:
       interval: "weekly"
       # Check for pip updates on Sundays
       day: "sunday"
+    groups:
+      pip:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

@@ -235,6 +235,18 @@ Received from the device (offer mode) or sent by the client (answer mode).
 }
 ```
 
+!!! important "Wait for the answer's ack before trickling candidates"
+    The device refuses a candidate that arrives before it has accepted the
+    answer, with `code 13, Received ICE candidate before answer`.
+
+    The cloud acks an answer under the **correlation id of the offer that
+    opened the session**, whatever the answer itself carried: answering with a
+    correlation id of our own came back acked under the offer's. So the ack is
+    matched on the session's correlation id, and not on the answer's. Beware
+    that the resubscribe ack sent right before an answer arrives first — in the
+    field 3 ms earlier — and carries `correlation_id: 0` and no session id;
+    taking it for the answer's ack releases the candidates too early.
+
 ### ICE Candidate
 
 Exchanged bidirectionally for trickle ICE.
@@ -363,8 +375,8 @@ Received when the call is answered by another device (e.g., the physical handset
 2. connect() → signaling WS (if not already connected)
    └─ subscribe (app_security)
 3. set_session_from_push(session_id, tag_id, correlation_id, device_id)
-4. send_answer(sdp)
-   ├─ exchange ICE candidates
+4. send_answer(sdp) → returns the answer's own ack
+   ├─ exchange ICE candidates (only after that ack; see Answer)
    └─ WebRTC media flowing
 5. CONNECTED (media)
    └─ send_terminate() or receive terminate
@@ -437,7 +449,7 @@ All callbacks are optional and async (`async def`). `on_event` receives signalin
 | `connect()` | Connect and subscribe to the signaling WS |
 | `disconnect()` | Disconnect and clean up session state |
 | `send_offer(device_id, sdp, module_id=None)` | Send an SDP offer (offer mode). Returns `session_id` |
-| `send_answer(sdp, session_id=None)` | Send an SDP answer (answer mode). Requires prior `set_session_from_push()` |
+| `send_answer(sdp, session_id=None, wait_for_ack=True, timeout=10)` | Send an SDP answer (answer mode) and return its ack. Requires prior `set_session_from_push()` |
 | `send_candidate(candidate, sdp_m_line_index, session_id=None)` | Send an ICE candidate |
 | `send_terminate(session_id=None)` | Terminate a session; the others stay open |
 

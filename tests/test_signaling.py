@@ -89,7 +89,7 @@ class TestSignalingMessages:
         signaling_client._device_id = MOCK_BRIDGE_ID
         signaling_client._correlation_id = "corr-456"
 
-        await signaling_client.send_answer(sdp="v=0\r\nanswer sdp")
+        await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", wait_for_ack=False)
 
         assert len(sent_messages) == 1
         msg = sent_messages[0]
@@ -100,6 +100,226 @@ class TestSignalingMessages:
         assert msg["tag_id"] == "tag-abc"
         assert msg["device_id"] == MOCK_BRIDGE_ID
         assert msg["correlation_id"] == "corr-456"
+
+    async def test_send_answer_returns_its_own_ack(self, signaling_client):
+        """The answer should complete on its own ack, not on one that precedes it."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        async def feed_acks():
+            # The resubscribe sent before every answer is acked first, 3 ms
+            # earlier in the field. It is not the answer's ack.
+            await signaling_client._handle_ack({"type": "ack", "correlation_id": 0})
+            await signaling_client._handle_ack({"type": "ack", "correlation_id": "corr-456", "session_id": "sess-123"})
+
+        feeder = asyncio.create_task(feed_acks())
+        ack = await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=1)
+        await feeder
+
+        assert ack["correlation_id"] == "corr-456"
+        assert not signaling_client._pending_answer_acks
+
+    async def test_send_answer_ack_keeps_the_session_addressable(self, signaling_client):
+        """An answer's ack should not overwrite the session it belongs to."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        async def feed_ack():
+            # The ack of an answer carries no tag_id and no device_id.
+            await signaling_client._handle_ack({"type": "ack", "correlation_id": "corr-456", "session_id": "sess-123"})
+
+        feeder = asyncio.create_task(feed_ack())
+        await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=1)
+        await feeder
+
+        session = signaling_client._sessions["sess-123"]
+        assert session.tag_id == "tag-abc"
+        assert session.device_id == MOCK_BRIDGE_ID
+
+    async def test_send_answer_returns_a_refused_ack(self, signaling_client):
+        """A refused answer should be returned, so the caller can recover."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+        error = {"code": 2, "message": "Invalid access_token"}
+
+        async def feed_ack():
+            await signaling_client._handle_ack({"type": "ack", "correlation_id": "corr-456", "error": error})
+
+        feeder = asyncio.create_task(feed_ack())
+        ack = await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=1)
+        await feeder
+
+        assert ack["error"] == error
+
+    async def test_send_answer_times_out_without_an_ack(self, signaling_client):
+        """An answer nobody acks should fail rather than wait forever."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        with pytest.raises(PyBticinoException, match="Timeout"):
+            await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=0.01)
+
+        assert not signaling_client._pending_answer_acks
+
+    async def test_send_answer_without_waiting(self, signaling_client):
+        """wait_for_ack=False should keep the previous fire-and-forget behaviour."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        ack = await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", wait_for_ack=False)
+
+        assert ack is None
+        assert not signaling_client._pending_answer_acks
+        signaling_client._send.assert_awaited_once()
+
+    async def test_answer_ack_does_not_complete_a_pending_offer(self, signaling_client):
+        """An offer waiting on the same socket should not take the answer's ack."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+        offer_future = asyncio.get_running_loop().create_future()
+        signaling_client._pending_acks["corr-999"] = offer_future
+
+        async def feed_ack():
+            await signaling_client._handle_ack({"type": "ack", "correlation_id": "corr-456", "session_id": "sess-123"})
+
+        feeder = asyncio.create_task(feed_ack())
+        await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=1)
+        await feeder
+
+        assert not offer_future.done()
+
+    async def test_terminate_fails_a_pending_answer_instead_of_completing_it(self, signaling_client):
+        """A terminate's ack echoes the session's correlation id; it must not ack the answer."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        answer = asyncio.create_task(signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=1))
+        await asyncio.sleep(0)
+        await signaling_client.send_terminate("sess-123")
+        await signaling_client._handle_ack({"type": "ack", "correlation_id": "corr-456"})
+
+        with pytest.raises(PyBticinoException, match="terminated"):
+            await answer
+        assert not signaling_client._pending_answer_acks
+
+    @pytest.mark.parametrize("correlation_id", ["", None])
+    async def test_send_answer_without_correlation_id_does_not_wait(self, signaling_client, correlation_id):
+        """With nothing to match an ack on, the answer returns at once."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id=correlation_id,
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        ack = await asyncio.wait_for(signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=5), timeout=0.5)
+
+        assert ack is None
+        assert not signaling_client._pending_answer_acks
+
+    async def test_cancelled_answer_leaves_nothing_pending(self, signaling_client):
+        """A caller cancelled while waiting should not leave its future behind."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        answer = asyncio.create_task(signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=5))
+        await asyncio.sleep(0)
+        assert signaling_client._pending_answer_acks
+        answer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await answer
+
+        assert not signaling_client._pending_answer_acks
+
+    async def test_second_answer_to_a_waiting_session_is_refused(self, signaling_client):
+        """Two answers would share one correlation id; the second is refused, the first still completes."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+
+        first = asyncio.create_task(signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=1))
+        await asyncio.sleep(0)
+        with pytest.raises(PyBticinoException, match="already waiting"):
+            await signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=1)
+        signaling_client._send.assert_awaited_once()
+
+        await signaling_client._handle_ack({"type": "ack", "correlation_id": "corr-456"})
+        assert (await first)["correlation_id"] == "corr-456"
+
+    async def test_server_closing_the_socket_fails_a_pending_answer(self, signaling_client):
+        """When the listener ends, a waiting answer fails at once instead of timing out."""
+        signaling_client._send = AsyncMock()
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+        closed = asyncio.Event()
+
+        class ClosingSocket:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                await closed.wait()
+                raise StopAsyncIteration
+
+        signaling_client._websocket = ClosingSocket()
+        listener = asyncio.create_task(signaling_client._listen())
+        answer = asyncio.create_task(signaling_client.send_answer(sdp="v=0\r\nanswer sdp", timeout=5))
+        await asyncio.sleep(0)
+        closed.set()
+        await listener
+
+        with pytest.raises(PyBticinoException, match="closed"):
+            await asyncio.wait_for(answer, timeout=0.5)
+        assert not signaling_client._pending_answer_acks
 
     async def test_send_candidate_message_format(self, signaling_client):
         """send_candidate should format ICE candidate correctly."""
@@ -192,7 +412,7 @@ class TestSessionFromPush:
             device_id=MOCK_BRIDGE_ID,
         )
 
-        await signaling_client.send_answer(sdp="answer-sdp")
+        await signaling_client.send_answer(sdp="answer-sdp", wait_for_ack=False)
 
         assert len(sent_messages) == 1
         assert sent_messages[0]["session_id"] == "push-sess"
@@ -413,7 +633,7 @@ class TestPerSessionState:
         )
         await self._open(signaling_client, "offer-sess", "offer-tag")
 
-        await signaling_client.send_answer("v=0\r\nanswer", session_id="push-sess")
+        await signaling_client.send_answer("v=0\r\nanswer", session_id="push-sess", wait_for_ack=False)
 
         msg = signaling_client._test_sent[-1]
         assert msg["data"]["type"] == "answer"

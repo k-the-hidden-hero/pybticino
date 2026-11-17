@@ -379,7 +379,7 @@ In offer mode, the device has an approximately **30-second timeout**. If the Web
 
 There are **no application-level keepalive messages** during active WebRTC sessions. The official app does not send ping/pong or any heartbeat during calls. TCP keepalive handles the WebSocket connection.
 
-For the push WS connection (which is long-lived), tokens expire approximately every hour. Use `resubscribe()` to send a fresh token without disconnecting.
+For the push WS connection (which is long-lived), a fresh token goes on a new connection: `WebsocketClient.resubscribe()` adds a subscription to the existing one, and every push then arrives once more. See [Keeping the Connection Alive](websocket-events.md#keeping-the-connection-alive).
 
 ## TURN/STUN Servers
 

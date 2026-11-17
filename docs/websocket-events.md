@@ -220,11 +220,19 @@ Disconnection events have the same structure with `push_type: "BNC1-disconnectio
 
 ## Keeping the Connection Alive
 
-The connection may drop when the OAuth token expires (~1 hour). Use `resubscribe()` to send a fresh token without disconnecting:
+Every `Subscribe` sent on a connection adds a subscription, and the server keeps them all until the connection closes: each push then arrives once per subscription. So `resubscribe()` does not replace the subscription, it adds one. In a capture from November 2026, a connection that had re-subscribed every hour for four hours received every push 5 times, and the subscription sent when it connected was still delivering.
+
+To move to a fresh token, subscribe on a new connection and close the old one afterwards, so that no push falls in between:
 
 ```python
-# Every hour
-await ws_client.resubscribe()
+fresh = WebsocketClient(auth_handler=auth, message_callback=on_message)
+await fresh.connect()  # subscribes with a fresh token
+await ws_client.disconnect()
+ws_client = fresh
 ```
+
+Pushes that both connections deliver in the meantime are copies. A consumer has to drop copies anyway: an RTC push also arrives as several pushes with the same `session_id`, each with its own `tag_id`.
+
+Whether a subscription stops delivering once its token expires is not known.
 
 The push WebSocket does **not** use application-level ping/pong messages. The official app relies on TCP keepalive. Sending WebSocket pings can cause the server to drop the connection after approximately 10 minutes.

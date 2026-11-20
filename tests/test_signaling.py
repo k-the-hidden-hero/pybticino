@@ -334,7 +334,7 @@ class TestSignalingMessages:
         signaling_client._device_id = MOCK_BRIDGE_ID
         signaling_client._correlation_id = "corr-456"
 
-        await signaling_client.send_player("unmute")
+        await signaling_client.send_player("unmute", wait_for_ack=False)
 
         assert len(sent_messages) == 1
         msg = sent_messages[0]
@@ -368,7 +368,7 @@ class TestSignalingMessages:
             device_id=MOCK_BRIDGE_ID,
         )
 
-        await signaling_client.send_player("unmute", session_id="sess-old")
+        await signaling_client.send_player("unmute", session_id="sess-old", wait_for_ack=False)
 
         msg = sent_messages[0]
         assert msg["session_id"] == "sess-old"
@@ -380,6 +380,109 @@ class TestSignalingMessages:
 
         with pytest.raises(PyBticinoException):
             await signaling_client.send_player("unmute")
+
+    async def _player_setup(self, signaling_client):
+        sent = []
+
+        async def mock_send(msg):
+            sent.append(msg)
+
+        signaling_client._send = mock_send
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+        return sent
+
+    async def test_send_player_returns_its_own_ack(self, signaling_client):
+        """The ack is matched on the command's own id and does not touch an offer waiting."""
+        sent = await self._player_setup(signaling_client)
+        offer_future = asyncio.get_running_loop().create_future()
+        signaling_client._pending_acks["corr-999"] = offer_future
+
+        async def feed_ack():
+            await asyncio.sleep(0)
+            # An ack that carries a session id would be taken for the offer's by
+            # the session-id fallback, if the player command were not tracked.
+            await signaling_client._handle_ack(
+                {"type": "ack", "correlation_id": sent[0]["correlation_id"], "session_id": "sess-123"}
+            )
+
+        feeder = asyncio.create_task(feed_ack())
+        ack = await signaling_client.send_player("unmute", timeout=1)
+        await feeder
+
+        assert ack["correlation_id"] == sent[0]["correlation_id"]
+        assert not offer_future.done()
+        assert not signaling_client._pending_player_acks
+
+    async def test_send_player_returns_a_refused_ack_and_allows_a_retry(self, signaling_client):
+        """A refused unmute did not toggle anything, so it may be sent again."""
+        sent = await self._player_setup(signaling_client)
+
+        async def feed_ack():
+            await asyncio.sleep(0)
+            await signaling_client._handle_ack(
+                {"type": "ack", "correlation_id": sent[0]["correlation_id"], "error": {"code": 2}}
+            )
+
+        feeder = asyncio.create_task(feed_ack())
+        ack = await signaling_client.send_player("unmute", timeout=1)
+        await feeder
+        assert ack["error"] == {"code": 2}
+
+        await signaling_client.send_player("unmute", wait_for_ack=False)
+        assert len(sent) == 2
+
+    async def test_second_unmute_on_a_session_is_refused(self, signaling_client):
+        """unmute toggles, so the library sends it once per session."""
+        sent = await self._player_setup(signaling_client)
+
+        await signaling_client.send_player("unmute", wait_for_ack=False)
+        with pytest.raises(PyBticinoException, match="already unmuted"):
+            await signaling_client.send_player("unmute", wait_for_ack=False)
+
+        assert len(sent) == 1
+
+    async def test_unmute_is_allowed_again_on_a_new_session(self, signaling_client):
+        """The once-only rule is per session, and ends with the session."""
+        sent = await self._player_setup(signaling_client)
+        await signaling_client.send_player("unmute", wait_for_ack=False)
+
+        await signaling_client.send_terminate("sess-123")
+        signaling_client.set_session_from_push(
+            session_id="sess-123",
+            tag_id="tag-abc",
+            correlation_id="corr-456",
+            device_id=MOCK_BRIDGE_ID,
+        )
+        await signaling_client.send_player("unmute", wait_for_ack=False)
+
+        assert [m["data"].get("value") for m in sent if m["data"]["type"] == "player"] == ["unmute", "unmute"]
+
+    async def test_unmute_without_an_ack_keeps_the_mark(self, signaling_client):
+        """After a timeout the command may have reached the device, so no second unmute."""
+        await self._player_setup(signaling_client)
+
+        with pytest.raises(PyBticinoException, match="Timeout"):
+            await signaling_client.send_player("unmute", timeout=0.01)
+        assert not signaling_client._pending_player_acks
+
+        with pytest.raises(PyBticinoException, match="already unmuted"):
+            await signaling_client.send_player("unmute", wait_for_ack=False)
+
+    async def test_disconnect_fails_a_pending_player_command(self, signaling_client):
+        """A closed socket releases a waiting player command at once."""
+        await self._player_setup(signaling_client)
+
+        pending = asyncio.create_task(signaling_client.send_player("unmute", timeout=5))
+        await asyncio.sleep(0)
+        signaling_client._fail_pending_answers("socket closed")
+
+        with pytest.raises(PyBticinoException, match="socket closed"):
+            await asyncio.wait_for(pending, timeout=0.5)
 
     async def test_send_candidate_message_format(self, signaling_client):
         """send_candidate should format ICE candidate correctly."""

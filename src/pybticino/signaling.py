@@ -104,6 +104,11 @@ class SignalingClient:
         # so it must not be taken for the ack of an offer, nor overwrite the
         # session it belongs to.
         self._pending_answer_acks: dict[str, asyncio.Future] = {}
+        # Player commands waiting for their ack, on the id each one carries.
+        self._pending_player_acks: dict[str, asyncio.Future] = {}
+        # Sessions already taken off hold: ``unmute`` toggles, so it goes out
+        # once per session.
+        self._unmuted_sessions: set[str] = set()
 
         # Every open session, so a caller holding several can address one.
         self._sessions: dict[str, _Session] = {}
@@ -194,6 +199,7 @@ class SignalingClient:
 
             # Clear session state
             self._sessions.clear()
+            self._unmuted_sessions.clear()
             self._session_id = None
             self._tag_id = None
             self._correlation_id = None
@@ -209,10 +215,11 @@ class SignalingClient:
         No ack can arrive on a closed socket. Without this, an answer sent just
         before the socket goes away waits out its whole timeout.
         """
-        for fut in self._pending_answer_acks.values():
-            if not fut.done():
-                fut.set_exception(PyBticinoException(reason))
-        self._pending_answer_acks.clear()
+        for pending in (self._pending_answer_acks, self._pending_player_acks):
+            for fut in pending.values():
+                if not fut.done():
+                    fut.set_exception(PyBticinoException(reason))
+            pending.clear()
 
     async def _subscribe(self) -> None:
         """Subscribe to the signaling WS with app_security."""
@@ -315,6 +322,13 @@ class SignalingClient:
             self._session_id = session_id
         if tag_id is not None:
             self._tag_id = tag_id
+
+        player_corr = message.get("correlation_id")
+        if player_corr and str(player_corr) in self._pending_player_acks:
+            fut = self._pending_player_acks.pop(str(player_corr))
+            if not fut.done():
+                fut.set_result(message)
+            return
 
         answer_corr = self._match_pending_answer(message)
         if answer_corr is not None:
@@ -576,8 +590,15 @@ class SignalingClient:
             _LOGGER.debug("Answer to session %s acked", sid)
         return ack
 
-    async def send_player(self, value: str, session_id: str | None = None) -> None:
-        """Send a ``player`` command on a session.
+    async def send_player(
+        self,
+        value: str,
+        session_id: str | None = None,
+        *,
+        wait_for_ack: bool = True,
+        timeout: float = ANSWER_ACK_TIMEOUT,
+    ) -> dict[str, Any] | None:
+        """Send a ``player`` command on a session and wait for its ack.
 
         Answering a call is two messages, not one. The official app's answer
         button sends ``unmute`` on the session it has just answered, and until
@@ -585,9 +606,11 @@ class SignalingClient:
         ``accepted_call`` and leaves the outdoor microphone and speaker closed,
         even though its video already flows.
 
-        The command toggles, so it is sent exactly once per call: a second one
-        mutes the call again in both directions, while the device's RTCP
-        receiver report still shows the client's audio arriving unharmed.
+        ``unmute`` toggles: a second one mutes the call again in both
+        directions, while the device's RTCP receiver report still shows the
+        client's audio arriving unharmed. The client therefore refuses a second
+        ``unmute`` on the same session, whatever the caller does; the mark is
+        dropped when the session ends or when the device refuses the command.
 
         The one ordering rule is that it must follow the device's own
         ``incoming_call`` status push, which on a BDIY can trail the call offer
@@ -603,6 +626,17 @@ class SignalingClient:
             value: The player command. ``"unmute"`` takes a call off hold.
             session_id: The session it applies to. Defaults to the most recent
                 one.
+            wait_for_ack: Whether to wait for the ack before returning.
+            timeout: How long to wait for it, in seconds.
+
+        Returns:
+            The ack, or ``None`` when not waiting for it. A refused command is
+            returned rather than raised, as with `send_answer`.
+
+        Raises:
+            PyBticinoException: If there is no session, ``unmute`` was already
+                sent on it, the socket closes first, or the ack does not arrive
+                within the timeout.
 
         """
         resolved = self._resolve_session(session_id)
@@ -610,18 +644,53 @@ class SignalingClient:
             raise PyBticinoException("No active session to send a player command to")
         sid, session = resolved
 
+        if value == "unmute" and sid in self._unmuted_sessions:
+            err_msg = f"Session {sid} was already unmuted; a second unmute would mute the call again"
+            raise PyBticinoException(err_msg)
+
+        # Its own id, as the app sends: the command is a decision of its own and
+        # not part of the answer it follows. It is also what the ack echoes.
+        corr_id = str(next(self._correlation_ids))
         message = {
             "action": "rtc",
             "data": {"type": "player", "value": value},
             "session_id": sid,
             "tag_id": session.tag_id,
             "device_id": session.device_id,
-            # Its own id, as the app sends: the command is a decision of its
-            # own and not part of the answer it follows.
-            "correlation_id": str(next(self._correlation_ids)),
+            "correlation_id": corr_id,
         }
-        await self._send(message)
-        _LOGGER.info("Player %r sent for session %s", value, sid)
+
+        ack_future: asyncio.Future[dict] | None = None
+        if wait_for_ack:
+            ack_future = asyncio.get_running_loop().create_future()
+            self._pending_player_acks[corr_id] = ack_future
+        if value == "unmute":
+            self._unmuted_sessions.add(sid)
+
+        try:
+            await self._send(message)
+            _LOGGER.info("Player %r sent for session %s", value, sid)
+            if ack_future is None:
+                return None
+            ack = await asyncio.wait_for(ack_future, timeout=timeout)
+        except BaseException as exc:
+            # Not delivered, or not known to have been: allow another attempt
+            # only when nothing can have reached the device.
+            if value == "unmute" and not isinstance(exc, TimeoutError | asyncio.CancelledError):
+                self._unmuted_sessions.discard(sid)
+            if isinstance(exc, TimeoutError):
+                err_msg = f"Timeout waiting for the ack of the player command on session {sid}"
+                raise PyBticinoException(err_msg) from exc
+            raise
+        finally:
+            if ack_future is not None and self._pending_player_acks.get(corr_id) is ack_future:
+                del self._pending_player_acks[corr_id]
+
+        if ack.get("error"):
+            if value == "unmute":
+                self._unmuted_sessions.discard(sid)
+            _LOGGER.warning("Player %r on session %s refused: %s", value, sid, ack["error"])
+        return ack
 
     async def send_candidate(self, candidate: str, sdp_m_line_index: int, session_id: str | None = None) -> None:
         """Send an ICE candidate.
@@ -692,6 +761,7 @@ class SignalingClient:
         await self._send(message)
         _LOGGER.info("Terminate sent for session %s", sid)
         self._sessions.pop(sid, None)
+        self._unmuted_sessions.discard(sid)
         if sid == self._session_id:
             self._session_id = None
             self._tag_id = None

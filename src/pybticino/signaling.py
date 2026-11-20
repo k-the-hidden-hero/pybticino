@@ -95,6 +95,9 @@ class SignalingClient:
         self._pending_acks: dict[str, asyncio.Future] = {}
         # Bridge each pending offer was sent to: correlation_id -> device_id
         self._pending_offer_devices: dict[str, str] = {}
+        # Serialized resubscribe state so callers wait for the subscribe ack (correlation_id 0)
+        self._resubscribe_lock = asyncio.Lock()
+        self._pending_subscribe_ack: asyncio.Future[dict[str, Any]] | None = None
 
         # Every open session, so a caller holding several can address one.
         self._sessions: dict[str, _Session] = {}
@@ -168,6 +171,7 @@ class SignalingClient:
                     fut.cancel()
             self._pending_acks.clear()
             self._pending_offer_devices.clear()
+            self._fail_pending_subscribe_ack("Signaling disconnected before resubscribe ack")
 
             # Cancel listener
             if self._listener_task and not self._listener_task.done():
@@ -242,7 +246,15 @@ class SignalingClient:
             raise
         finally:
             self._is_connected = False
+            self._fail_pending_subscribe_ack("Signaling connection closed before resubscribe ack")
             _LOGGER.info("Signaling listener stopped")
+
+    def _fail_pending_subscribe_ack(self, reason: str) -> None:
+        """Fail an in-flight resubscribe ack future when the socket closes."""
+        fut = self._pending_subscribe_ack
+        self._pending_subscribe_ack = None
+        if fut is not None and not fut.done():
+            fut.set_exception(PyBticinoException(reason))
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
         """Route incoming signaling messages to appropriate handlers."""
@@ -292,6 +304,16 @@ class SignalingClient:
         if tag_id is not None:
             self._tag_id = tag_id
 
+        corr = message.get("correlation_id")
+        if (
+            self._pending_subscribe_ack is not None
+            and not self._pending_subscribe_ack.done()
+            and session_id is None
+            and corr in (0, "0")
+        ):
+            self._pending_subscribe_ack.set_result(message)
+            return
+
         corr_id = self._match_pending_offer(message)
         if corr_id is None:
             # A subscribe, candidate or terminate ack: no offer is waiting on it.
@@ -338,26 +360,52 @@ class SignalingClient:
         _LOGGER.debug("Signaling send: %s", message)
         await self._websocket.send(json.dumps(message))
 
-    async def resubscribe(self) -> None:
-        """Re-subscribe on the existing connection with a fresh token.
+    async def resubscribe(self, timeout: float = 10.0) -> None:
+        """Re-subscribe on the existing connection with a fresh token and wait for ack.
 
         Sends a new subscribe message with a refreshed OAuth token on the
-        current WebSocket connection, keeping the session alive without
-        disconnecting. Mirrors WebsocketClient.resubscribe().
-        """
-        if not self._websocket or not self._is_connected:
-            raise PyBticinoException("Cannot resubscribe: no active signaling connection")
+        current WebSocket connection and waits for the server's subscribe ack
+        (correlation_id 0) before returning, keeping existing sessions intact
+        while avoiding a race where a subsequent offer/answer reaches the
+        server before the token refresh is processed.
 
-        access_token = await self._auth_handler.get_access_token()
-        subscribe_msg = {
-            "action": "subscribe",
-            "access_token": access_token,
-            "app_type": "app_security",
-            "version": "1.0",
-            "platform": "android",
-        }
-        _LOGGER.info("Re-subscribing signaling with fresh token")
-        await self._websocket.send(json.dumps(subscribe_msg))
+        Args:
+            timeout: Maximum seconds to wait for the subscribe ack.
+
+        Raises:
+            PyBticinoException: If not connected, if the ack reports an error,
+                if the connection closes, or if waiting times out.
+
+        """
+        async with self._resubscribe_lock:
+            if not self._websocket or not self._is_connected:
+                raise PyBticinoException("Cannot resubscribe: no active signaling connection")
+
+            access_token = await self._auth_handler.get_access_token()
+            subscribe_msg = {
+                "action": "subscribe",
+                "access_token": access_token,
+                "app_type": "app_security",
+                "version": "1.0",
+                "platform": "android",
+            }
+            loop = asyncio.get_running_loop()
+            ack_future: asyncio.Future[dict[str, Any]] = loop.create_future()
+            self._pending_subscribe_ack = ack_future
+            _LOGGER.info("Re-subscribing signaling with fresh token")
+            try:
+                await self._websocket.send(json.dumps(subscribe_msg))
+                ack = await asyncio.wait_for(ack_future, timeout=timeout)
+            except TimeoutError as e:
+                err_msg = "Timeout waiting for signaling resubscribe ack"
+                raise PyBticinoException(err_msg) from e
+            finally:
+                if self._pending_subscribe_ack is ack_future:
+                    self._pending_subscribe_ack = None
+
+            if ack.get("status") != "ok":
+                err_msg = f"Signaling resubscription failed: {ack}"
+                raise PyBticinoException(err_msg)
 
     async def ensure_connected(self) -> None:
         """Ensure the signaling WS is connected, reconnecting if needed."""

@@ -439,3 +439,171 @@ class TestCorrelationIds:
             await acker
 
         assert sent[0]["correlation_id"] != sent[1]["correlation_id"]
+
+
+class TestResubscribeAck:
+    """resubscribe() waits for its subscribe ack before returning (bticino_intercom#127)."""
+
+    async def test_offer_waits_for_resubscribe_ack_before_sending(self, signaling_client):
+        """An offer sent right after resubscribe() must not hit the server before subscribe completes."""
+        subscribe_sent = asyncio.Event()
+        release_subscribe_ack = asyncio.Event()
+        server_subscribed = False
+        events: list[str] = []
+        bg_tasks: list[asyncio.Task[None]] = []
+
+        async def mock_ws_send(raw: str) -> None:
+            nonlocal server_subscribed
+            msg = json.loads(raw)
+            if msg.get("action") == "subscribe":
+                events.append("subscribe_sent")
+                subscribe_sent.set()
+
+                async def _deliver_subscribe_ack() -> None:
+                    nonlocal server_subscribed
+                    await release_subscribe_ack.wait()
+                    server_subscribed = True
+                    events.append("subscribe_acked")
+                    await signaling_client._handle_message({"type": "ack", "status": "ok", "correlation_id": 0})
+
+                bg_tasks.append(asyncio.create_task(_deliver_subscribe_ack()))
+            elif msg.get("action") == "rtc" and msg.get("data", {}).get("type") == "offer":
+                events.append("offer_sent")
+                assert server_subscribed, "Offer reached server before resubscribe was acknowledged"
+                bg_tasks.append(
+                    asyncio.create_task(
+                        signaling_client._handle_message(
+                            {
+                                "type": "ack",
+                                "status": "ok",
+                                "session_id": "sess-after-resub",
+                                "tag_id": "tag-after-resub",
+                                "correlation_id": msg["correlation_id"],
+                            }
+                        )
+                    )
+                )
+
+        mock_ws = MagicMock()
+        mock_ws.state = None
+        mock_ws.send = AsyncMock(side_effect=mock_ws_send)
+        signaling_client._websocket = mock_ws
+        signaling_client._is_connected = True
+
+        async def _resubscribe_then_offer() -> str:
+            await signaling_client.resubscribe(timeout=2.0)
+            return await signaling_client.send_offer(device_id=MOCK_BRIDGE_ID, sdp="v=0\r\n")
+
+        task = asyncio.create_task(_resubscribe_then_offer())
+        await subscribe_sent.wait()
+        await asyncio.sleep(0.02)
+        # Offer must not have gone out while subscribe ack is still pending.
+        assert events == ["subscribe_sent"]
+
+        release_subscribe_ack.set()
+        assert await task == "sess-after-resub"
+        assert events == ["subscribe_sent", "subscribe_acked", "offer_sent"]
+
+    async def test_resubscribe_accepts_string_zero_correlation_id(self, signaling_client):
+        """A subscribe ack carrying correlation_id '0' (string) also resolves resubscribe()."""
+
+        async def mock_ws_send(raw: str) -> None:
+            asyncio.get_running_loop().call_soon(
+                lambda: asyncio.create_task(
+                    signaling_client._handle_message({"type": "ack", "status": "ok", "correlation_id": "0"})
+                )
+            )
+
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock(side_effect=mock_ws_send)
+        signaling_client._websocket = mock_ws
+        signaling_client._is_connected = True
+
+        await signaling_client.resubscribe(timeout=2.0)
+
+    async def test_resubscribe_raises_on_error_ack(self, signaling_client):
+        """An error status on the subscribe ack raises PyBticinoException."""
+
+        async def mock_ws_send(raw: str) -> None:
+            asyncio.get_running_loop().call_soon(
+                lambda: asyncio.create_task(
+                    signaling_client._handle_message(
+                        {
+                            "type": "ack",
+                            "status": "error",
+                            "correlation_id": 0,
+                            "error": {"code": 2, "message": "Invalid access_token"},
+                        }
+                    )
+                )
+            )
+
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock(side_effect=mock_ws_send)
+        signaling_client._websocket = mock_ws
+        signaling_client._is_connected = True
+
+        with pytest.raises(PyBticinoException, match="Signaling resubscription failed"):
+            await signaling_client.resubscribe(timeout=2.0)
+
+    async def test_resubscribe_raises_on_timeout(self, signaling_client):
+        """If no subscribe ack arrives before timeout, resubscribe() raises and cleans up."""
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock()
+        signaling_client._websocket = mock_ws
+        signaling_client._is_connected = True
+
+        with pytest.raises(PyBticinoException, match="Timeout waiting for signaling resubscribe ack"):
+            await signaling_client.resubscribe(timeout=0.05)
+
+        assert signaling_client._pending_subscribe_ack is None
+
+    async def test_resubscribe_fails_promptly_on_disconnect(self, signaling_client):
+        """Disconnecting while awaiting a resubscribe ack fails the waiter immediately."""
+        sent = asyncio.Event()
+
+        async def mock_ws_send(raw: str) -> None:
+            sent.set()
+
+        mock_ws = MagicMock()
+        mock_ws.state = None
+        mock_ws.send = AsyncMock(side_effect=mock_ws_send)
+        mock_ws.close = AsyncMock()
+        signaling_client._websocket = mock_ws
+        signaling_client._is_connected = True
+
+        task = asyncio.create_task(signaling_client.resubscribe(timeout=5.0))
+        await sent.wait()
+        await signaling_client.disconnect()
+
+        with pytest.raises(PyBticinoException, match="disconnected before resubscribe ack"):
+            await task
+
+    async def test_resubscribe_keeps_existing_sessions_and_ignores_offer_ack(self, signaling_client):
+        """An unrelated offer ack does not resolve resubscribe(), and active sessions stay intact."""
+        signaling_client.set_session_from_push(
+            session_id="live-view", tag_id="t0", correlation_id="10", device_id=MOCK_BRIDGE_ID
+        )
+        sent = asyncio.Event()
+
+        async def mock_ws_send(raw: str) -> None:
+            sent.set()
+
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock(side_effect=mock_ws_send)
+        signaling_client._websocket = mock_ws
+        signaling_client._is_connected = True
+
+        task = asyncio.create_task(signaling_client.resubscribe(timeout=2.0))
+        await sent.wait()
+
+        # Unrelated offer ack carrying a session_id must not resolve resubscribe().
+        await signaling_client._handle_message(
+            {"type": "ack", "status": "ok", "session_id": "other-sess", "tag_id": "t2", "correlation_id": "99"}
+        )
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        await signaling_client._handle_message({"type": "ack", "status": "ok", "correlation_id": 0})
+        await task
+        assert "live-view" in signaling_client._sessions
